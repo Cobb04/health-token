@@ -11,8 +11,25 @@ struct MenuBarContentView: View {
 
         Divider()
 
-        Text("每口估算：约 \(model.snapshot.settings.sipEstimate.milliliters) mL")
-        Text("提醒间隔：\(reminderMinutes) 分钟")
+        Button(model.snapshot.status == .paused ? "恢复 Health Token" : "暂停 Health Token") {
+            model.setPaused(model.snapshot.status != .paused)
+        }
+
+        Divider()
+
+        Picker("每口估算", selection: sipEstimate) {
+            ForEach(SipEstimate.allCases, id: \.self) { estimate in
+                Text("约 \(estimate.milliliters) mL").tag(estimate)
+            }
+        }
+
+        Picker("提醒间隔", selection: reminderInterval) {
+            ForEach(Self.reminderIntervalOptions, id: \.self) { interval in
+                Text("\(Int(interval / 60)) 分钟").tag(interval)
+            }
+        }
+
+        Toggle("无 Agent 时显示低干扰提醒", isOn: noAgentFallbackEnabled)
 
         if let persistenceError = model.persistenceError {
             Divider()
@@ -32,10 +49,38 @@ struct MenuBarContentView: View {
             "下一次低干扰提醒正在计时"
         case .dueAmbient:
             "低干扰饮水提醒已显示"
+        case .snoozed:
+            "强提醒已稍后，饮水仍到期"
+        case .paused:
+            "Health Token 已暂停"
         }
     }
 
-    private var reminderMinutes: Int {
-        Int(model.snapshot.settings.reminderInterval / 60)
+    private var sipEstimate: Binding<SipEstimate> {
+        Binding(
+            get: { model.snapshot.settings.sipEstimate },
+            set: { model.setSipEstimate($0) }
+        )
     }
+
+    private var reminderInterval: Binding<TimeInterval> {
+        Binding(
+            get: { model.snapshot.settings.reminderInterval },
+            set: { model.setReminderInterval($0) }
+        )
+    }
+
+    private var noAgentFallbackEnabled: Binding<Bool> {
+        Binding(
+            get: { model.snapshot.settings.noAgentFallbackEnabled },
+            set: { model.setNoAgentFallbackEnabled($0) }
+        )
+    }
+
+    private static let reminderIntervalOptions: [TimeInterval] = [
+        15 * 60,
+        30 * 60,
+        45 * 60,
+        60 * 60
+    ]
 }
