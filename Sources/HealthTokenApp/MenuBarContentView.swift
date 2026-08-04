@@ -11,6 +11,31 @@ struct MenuBarContentView: View {
 
         Divider()
 
+        Label(
+            integrationPresentation.status,
+            systemImage: integrationPresentation.image
+        )
+        Text(integrationPresentation.detail)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        if model.isCodexObservationEnabled {
+            Button("停用 Codex 观察") {
+                model.disableCodexObservation()
+            }
+        } else {
+            Button("启用 Codex 观察") {
+                model.enableCodexObservation()
+            }
+        }
+
+        if let integrationError = model.integrationError {
+            Text(integrationError)
+                .font(.caption)
+        }
+
+        Divider()
+
         Text("每口估算：约 \(model.snapshot.settings.sipEstimate.milliliters) mL")
         Text("提醒间隔：\(reminderMinutes) 分钟")
 
@@ -37,5 +62,34 @@ struct MenuBarContentView: View {
 
     private var reminderMinutes: Int {
         Int(model.snapshot.settings.reminderInterval / 60)
+    }
+
+    private var integrationPresentation: (
+        status: String,
+        image: String,
+        detail: String
+    ) {
+        switch model.integrationHealth {
+        case .connected:
+            (
+                "Codex 观察：已连接",
+                "checkmark.circle.fill",
+                "仅接收会话、角色、注意力和工具分类元数据。"
+            )
+        case .fallbackOnly:
+            (
+                "Codex 观察：仅低干扰兜底",
+                "exclamationmark.circle",
+                model.isCodexObservationEnabled
+                    ? "等待 Codex /hooks 信任确认或首个生命周期事件；饮水到期仍保持 B。"
+                    : "Codex 事件未连接；饮水到期仍只显示低干扰提醒。"
+            )
+        case .unavailable:
+            (
+                "Codex 观察：不可用",
+                "xmark.circle",
+                "未发现可用的本地 Codex 会话；可安装 Codex 后再启用。"
+            )
+        }
     }
 }

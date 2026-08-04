@@ -9,12 +9,17 @@ let package = Package(
     ],
     products: [
         .library(name: "HealthTokenCore", targets: ["HealthTokenCore"]),
-        .executable(name: "HealthToken", targets: ["HealthTokenApp"])
+        .executable(name: "HealthToken", targets: ["HealthTokenApp"]),
+        .executable(name: "HealthTokenHook", targets: ["HealthTokenHook"])
     ],
     targets: [
         .target(name: "HealthTokenCore"),
         .executableTarget(
             name: "HealthTokenApp",
+            dependencies: ["HealthTokenCore"]
+        ),
+        .executableTarget(
+            name: "HealthTokenHook",
             dependencies: ["HealthTokenCore"]
         ),
         .testTarget(

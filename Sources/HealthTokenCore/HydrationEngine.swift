@@ -16,6 +16,7 @@ public final class HydrationEngine {
         case openReminder
         case closeReminder
         case confirmSip
+        case agentEvent(AgentEvent)
     }
 
     private let clock: any HydrationClock
@@ -100,6 +101,8 @@ public final class HydrationEngine {
             }
             status = .accumulating
             detailsExpanded = false
+        case .agentEvent:
+            break
         }
 
         return snapshot

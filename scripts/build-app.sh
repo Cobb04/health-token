@@ -12,6 +12,7 @@ swift build --configuration "$configuration" --disable-index-store
 mkdir -p "$application_directory/Contents/MacOS"
 mkdir -p "$application_directory/Contents/Resources"
 cp "$build_directory/HealthToken" "$application_directory/Contents/MacOS/HealthToken"
+cp "$build_directory/HealthTokenHook" "$application_directory/Contents/MacOS/HealthTokenHook"
 cp "$repository_root/Support/Info.plist" "$application_directory/Contents/Info.plist"
 
 echo "$application_directory"

@@ -169,6 +169,59 @@ func totalUsesLocalCalendarDay() throws {
     #expect(nextDay.todayEstimatedMilliliters == 25)
 }
 
+@Test("ordinary Codex activity cannot create or clear a hydration reminder")
+func ordinaryCodexActivityIsReadOnly() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(
+        clock: clock,
+        store: InMemoryHydrationStore()
+    )
+    let event = AgentEvent(
+        kind: .toolUsed,
+        sessionID: "synthetic-session",
+        timestamp: setup,
+        role: .root,
+        attention: .none,
+        toolClassification: .ordinary
+    )
+
+    let beforeDue = try engine.send(.agentEvent(event))
+    clock.now.addTimeInterval(30 * 60)
+    let due = try engine.send(.agentEvent(event))
+    let dueEvents: [(AgentEvent.Kind, AgentToolClassification?)] = [
+        (.promptSubmitted, nil),
+        (.planUpdated, .plan),
+        (.toolUsed, .ordinary),
+        (.completed, nil),
+        (.aborted, nil)
+    ]
+    var afterActivity = due
+    for (kind, toolClassification) in dueEvents {
+        afterActivity = try engine.send(
+            .agentEvent(
+                AgentEvent(
+                    kind: kind,
+                    sessionID: "synthetic-session",
+                    timestamp: clock.now,
+                    role: .root,
+                    attention: .none,
+                    toolClassification: toolClassification
+                )
+            )
+        )
+    }
+
+    #expect(beforeDue.status == .accumulating)
+    #expect(beforeDue.reminderLevel == .hidden)
+    #expect(due.status == .dueAmbient)
+    #expect(due.reminderLevel == .ambient)
+    #expect(afterActivity.status == .dueAmbient)
+    #expect(afterActivity.reminderLevel == .ambient)
+    #expect(afterActivity.records.isEmpty)
+    #expect(afterActivity.cycle.startedAt == setup)
+}
+
 private final class TestClock: HydrationClock {
     var now: Date
 
