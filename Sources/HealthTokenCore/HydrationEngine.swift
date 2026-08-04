@@ -17,6 +17,13 @@ public final class HydrationEngine {
         case closeReminder
         case confirmSip
         case agentEvent(AgentEvent)
+        case setSipEstimate(SipEstimate)
+        case setReminderInterval(TimeInterval)
+        case snooze
+        case setPaused(Bool)
+        case setNoAgentFallbackEnabled(Bool)
+        case agentActivity
+        case undoSip(UUID)
     }
 
     private let clock: any HydrationClock
@@ -26,6 +33,16 @@ public final class HydrationEngine {
     private var detailsExpanded = false
     private var evaluatedAt: Date
     private var status: HydrationStatus
+    private var agentAwarePresentation = false
+    private var undoContext: UndoContext?
+
+    private struct UndoContext {
+        let recordID: UUID
+        let previousCycle: HydrationCycle
+        let previousSnoozedUntil: Date?
+        let previousAgentAwarePresentation: Bool
+        let expiresAt: Date
+    }
 
     public init(
         clock: any HydrationClock,
@@ -52,44 +69,56 @@ public final class HydrationEngine {
             try store.save(persistence)
         }
 
-        status = persistence.cycle.status(at: evaluatedAt)
+        status = .accumulating
+        undoContext = nil
+        status = evaluatedStatus()
     }
 
     public var snapshot: HydrationSnapshot {
         return HydrationSnapshot(
             status: status,
-            reminderLevel: status == .dueAmbient ? .ambient : .hidden,
+            reminderLevel: reminderLevel,
             detailsExpanded: detailsExpanded,
             settings: persistence.settings,
             records: persistence.records,
             cycle: persistence.cycle,
             todayEstimatedMilliliters: persistence.records
                 .filter { calendar.isDate($0.timestamp, inSameDayAs: evaluatedAt) }
-                .reduce(0) { $0 + $1.estimatedMilliliters }
+                .reduce(0) { $0 + $1.estimatedMilliliters },
+            snoozedUntil: persistence.snoozedUntil,
+            undoableDrinkRecord: undoableDrinkRecord
         )
     }
 
     @discardableResult
     public func send(_ action: Action) throws -> HydrationSnapshot {
         evaluatedAt = clock.now
-        status = persistence.cycle.status(at: evaluatedAt)
+        if undoContext?.expiresAt ?? .distantPast <= evaluatedAt {
+            undoContext = nil
+        }
+        status = evaluatedStatus()
 
         switch action {
         case .timeAdvanced:
             break
         case .openReminder:
-            if snapshot.status == .dueAmbient {
+            if snapshot.status.isHydrationDue {
                 detailsExpanded = true
             }
         case .closeReminder:
             detailsExpanded = false
         case .confirmSip:
-            guard snapshot.status == .dueAmbient else { break }
+            guard snapshot.status.isHydrationDue else {
+                break
+            }
 
+            let previousCycle = persistence.cycle
+            let previousSnoozedUntil = persistence.snoozedUntil
+            let previousAgentAwarePresentation = agentAwarePresentation
             let record = DrinkRecord(
                 id: UUID(),
                 timestamp: evaluatedAt,
-                estimatedMilliliters: persistence.settings.sipEstimate.milliliters,
+                sipEstimate: persistence.settings.sipEstimate,
                 sourceAction: .sipConfirmation
             )
             try persist { nextPersistence in
@@ -98,11 +127,81 @@ public final class HydrationEngine {
                     startedAt: evaluatedAt,
                     reminderInterval: nextPersistence.settings.reminderInterval
                 )
+                nextPersistence.snoozedUntil = nil
             }
             status = .accumulating
             detailsExpanded = false
-        case .agentEvent:
-            break
+            agentAwarePresentation = false
+            undoContext = UndoContext(
+                recordID: record.id,
+                previousCycle: previousCycle,
+                previousSnoozedUntil: previousSnoozedUntil,
+                previousAgentAwarePresentation: previousAgentAwarePresentation,
+                expiresAt: evaluatedAt.addingTimeInterval(10)
+            )
+        case let .setSipEstimate(estimate):
+            try persist { nextPersistence in
+                nextPersistence.settings.sipEstimate = estimate
+            }
+        case let .setReminderInterval(interval):
+            let normalizedInterval = HydrationSettings.normalizedReminderInterval(interval)
+            try persist { nextPersistence in
+                nextPersistence.settings.reminderInterval = normalizedInterval
+                nextPersistence.cycle = HydrationCycle(
+                    startedAt: nextPersistence.cycle.startedAt,
+                    reminderInterval: normalizedInterval
+                )
+            }
+            status = evaluatedStatus()
+            if status == .accumulating {
+                agentAwarePresentation = false
+            }
+        case .snooze:
+            guard status == .dueAmbient else { break }
+            try persist { nextPersistence in
+                nextPersistence.snoozedUntil = evaluatedAt.addingTimeInterval(15 * 60)
+            }
+            status = evaluatedStatus()
+            detailsExpanded = false
+            agentAwarePresentation = false
+        case let .setPaused(isPaused):
+            try persist { nextPersistence in
+                nextPersistence.isPaused = isPaused
+            }
+            status = evaluatedStatus()
+            if isPaused {
+                detailsExpanded = false
+            }
+        case let .setNoAgentFallbackEnabled(isEnabled):
+            try persist { nextPersistence in
+                nextPersistence.settings.noAgentFallbackEnabled = isEnabled
+            }
+        case .agentActivity, .agentEvent(_):
+            if status == .dueAmbient {
+                agentAwarePresentation = true
+            }
+        case let .undoSip(recordID):
+            guard let context = activeUndoContext,
+                  context.recordID == recordID,
+                  persistence.records.contains(where: { $0.id == recordID }) else {
+                break
+            }
+            try persist { nextPersistence in
+                if let recordIndex = nextPersistence.records.lastIndex(
+                    where: { $0.id == recordID }
+                ) {
+                    nextPersistence.records.remove(at: recordIndex)
+                }
+                nextPersistence.cycle = HydrationCycle(
+                    startedAt: context.previousCycle.startedAt,
+                    reminderInterval: nextPersistence.settings.reminderInterval
+                )
+                nextPersistence.snoozedUntil = context.previousSnoozedUntil
+            }
+            undoContext = nil
+            agentAwarePresentation = context.previousAgentAwarePresentation
+            status = evaluatedStatus()
+            detailsExpanded = status.isHydrationDue
         }
 
         return snapshot
@@ -115,5 +214,51 @@ public final class HydrationEngine {
         mutation(&nextPersistence)
         try store.save(nextPersistence)
         persistence = nextPersistence
+    }
+
+    private func evaluatedStatus() -> HydrationStatus {
+        if persistence.isPaused {
+            return .paused
+        }
+
+        guard persistence.cycle.status(at: evaluatedAt) == .dueAmbient else {
+            return .accumulating
+        }
+
+        if let snoozedUntil = persistence.snoozedUntil,
+           evaluatedAt < snoozedUntil {
+            return .snoozed
+        }
+
+        return .dueAmbient
+    }
+
+    private var reminderLevel: ReminderLevel {
+        if activeUndoContext != nil, status != .paused {
+            return .confirmation
+        }
+
+        switch status {
+        case .accumulating, .paused:
+            return .hidden
+        case .snoozed:
+            return .ambient
+        case .dueAmbient:
+            return persistence.settings.noAgentFallbackEnabled || agentAwarePresentation
+                ? .ambient
+                : .hidden
+        }
+    }
+
+    private var activeUndoContext: UndoContext? {
+        guard let undoContext, evaluatedAt < undoContext.expiresAt else {
+            return nil
+        }
+        return undoContext
+    }
+
+    private var undoableDrinkRecord: DrinkRecord? {
+        guard let recordID = activeUndoContext?.recordID else { return nil }
+        return persistence.records.last { $0.id == recordID }
     }
 }

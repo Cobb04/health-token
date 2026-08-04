@@ -3,7 +3,9 @@
 Health Token is a local-first macOS hydration helper. After a 30-minute
 hydration cycle, it shows a quiet water drop beneath the built-in notch or at
 the top center of the active display. Opening the drop lets you record one
-deliberate sip and see today's estimated total.
+deliberate sip, snooze for 15 minutes, undo a just-created record, and see
+today's estimated total. The menu bar provides pause/resume, 15/25/35 mL sip
+presets, 15/30/45/60-minute reminder intervals, and a no-Agent fallback toggle.
 
 Every displayed volume is an approximation. Health Token does not show a
 medical hydration target or claim to measure actual intake.

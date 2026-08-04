@@ -11,6 +11,12 @@ struct MenuBarContentView: View {
 
         Divider()
 
+        Button(model.snapshot.status == .paused ? "恢复 Health Token" : "暂停 Health Token") {
+            model.setPaused(model.snapshot.status != .paused)
+        }
+
+        Divider()
+
         Label(
             integrationPresentation.status,
             systemImage: integrationPresentation.image
@@ -36,8 +42,19 @@ struct MenuBarContentView: View {
 
         Divider()
 
-        Text("每口估算：约 \(model.snapshot.settings.sipEstimate.milliliters) mL")
-        Text("提醒间隔：\(reminderMinutes) 分钟")
+        Picker("每口估算", selection: sipEstimate) {
+            ForEach(SipEstimate.allCases, id: \.self) { estimate in
+                Text("约 \(estimate.milliliters) mL").tag(estimate)
+            }
+        }
+
+        Picker("提醒间隔", selection: reminderInterval) {
+            ForEach(Self.reminderIntervalOptions, id: \.self) { interval in
+                Text("\(Int(interval / 60)) 分钟").tag(interval)
+            }
+        }
+
+        Toggle("无 Agent 时显示低干扰提醒", isOn: noAgentFallbackEnabled)
 
         if let persistenceError = model.persistenceError {
             Divider()
@@ -57,11 +74,18 @@ struct MenuBarContentView: View {
             "下一次低干扰提醒正在计时"
         case .dueAmbient:
             "低干扰饮水提醒已显示"
+        case .snoozed:
+            "强提醒已稍后，饮水仍到期"
+        case .paused:
+            "Health Token 已暂停"
         }
     }
 
-    private var reminderMinutes: Int {
-        Int(model.snapshot.settings.reminderInterval / 60)
+    private var sipEstimate: Binding<SipEstimate> {
+        Binding(
+            get: { model.snapshot.settings.sipEstimate },
+            set: { model.setSipEstimate($0) }
+        )
     }
 
     private var integrationPresentation: (
@@ -77,13 +101,23 @@ struct MenuBarContentView: View {
                 "仅接收会话、角色、注意力和工具分类元数据。"
             )
         case .fallbackOnly:
-            (
-                "Codex 观察：仅低干扰兜底",
-                "exclamationmark.circle",
-                model.isCodexObservationEnabled
-                    ? "等待 Codex /hooks 信任确认或首个生命周期事件；饮水到期仍保持 B。"
-                    : "Codex 事件未连接；饮水到期仍只显示低干扰提醒。"
-            )
+            if model.snapshot.settings.noAgentFallbackEnabled {
+                (
+                    "Codex 观察：仅低干扰兜底",
+                    "exclamationmark.circle",
+                    model.isCodexObservationEnabled
+                        ? "等待 Codex /hooks 信任确认或首个生命周期事件；饮水到期仍保持 B。"
+                        : "Codex 事件未连接；饮水到期仍只显示低干扰提醒。"
+                )
+            } else {
+                (
+                    "Codex 观察：等待事件",
+                    "exclamationmark.circle",
+                    model.isCodexObservationEnabled
+                        ? "等待 Codex 生命周期事件；收到活动后只显示低干扰提醒。"
+                        : "Codex 事件未连接，且无 Agent 兜底已关闭。"
+                )
+            }
         case .unavailable:
             (
                 "Codex 观察：不可用",
@@ -92,4 +126,25 @@ struct MenuBarContentView: View {
             )
         }
     }
+
+    private var reminderInterval: Binding<TimeInterval> {
+        Binding(
+            get: { model.snapshot.settings.reminderInterval },
+            set: { model.setReminderInterval($0) }
+        )
+    }
+
+    private var noAgentFallbackEnabled: Binding<Bool> {
+        Binding(
+            get: { model.snapshot.settings.noAgentFallbackEnabled },
+            set: { model.setNoAgentFallbackEnabled($0) }
+        )
+    }
+
+    private static let reminderIntervalOptions: [TimeInterval] = [
+        15 * 60,
+        30 * 60,
+        45 * 60,
+        60 * 60
+    ]
 }

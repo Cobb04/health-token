@@ -70,7 +70,7 @@ func confirmingSipCompletesCycleExactlyOnce() throws {
     #expect(confirmed.records[0].sourceAction == .sipConfirmation)
     #expect(confirmed.todayEstimatedMilliliters == 25)
     #expect(confirmed.status == .accumulating)
-    #expect(confirmed.reminderLevel == .hidden)
+    #expect(confirmed.reminderLevel == .confirmation)
     #expect(!confirmed.detailsExpanded)
     #expect(confirmed.cycle.startedAt == clock.now)
     #expect(confirmed.cycle.reminderInterval == 30 * 60)
@@ -144,6 +144,208 @@ func recordsSurviveRestart() throws {
     #expect(restartedEngine.snapshot.records[0].estimatedMilliliters == 15)
     #expect(restartedEngine.snapshot.todayEstimatedMilliliters == 15)
     #expect(restartedEngine.snapshot.settings.sipEstimate == .small)
+}
+
+@Test("changing sip estimate affects future records without rewriting history")
+func sipEstimateChangesOnlyFutureRecords() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+
+    _ = try engine.send(.setSipEstimate(.large))
+    clock.now.addTimeInterval(30 * 60)
+    _ = try engine.send(.confirmSip)
+    _ = try engine.send(.setSipEstimate(.small))
+
+    #expect(engine.snapshot.settings.sipEstimate == .small)
+    #expect(engine.snapshot.records.map(\.estimatedMilliliters) == [35])
+}
+
+@Test("changing reminder interval updates the active cycle from its existing start")
+func reminderIntervalUpdatesActiveCycle() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let store = InMemoryHydrationStore()
+    let engine = try HydrationEngine(clock: clock, store: store)
+
+    clock.now.addTimeInterval(30 * 60)
+    let lengthened = try engine.send(.setReminderInterval(45 * 60))
+    clock.now.addTimeInterval(15 * 60)
+    let due = try engine.send(.timeAdvanced)
+    let restarted = try HydrationEngine(clock: clock, store: store)
+
+    #expect(lengthened.status == .accumulating)
+    #expect(lengthened.cycle.startedAt == setup)
+    #expect(lengthened.cycle.reminderInterval == 45 * 60)
+    #expect(due.status == .dueAmbient)
+    #expect(restarted.snapshot.settings.reminderInterval == 45 * 60)
+    #expect(restarted.snapshot.cycle.reminderInterval == 45 * 60)
+}
+
+@Test("snooze keeps hydration due and ambient for a fifteen minute cooldown")
+func snoozeSuppressesEscalationWithoutDrinking() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+
+    let snoozed = try engine.send(.snooze)
+    clock.now.addTimeInterval(15 * 60 - 1)
+    let stillSnoozed = try engine.send(.timeAdvanced)
+    clock.now.addTimeInterval(1)
+    let eligibleAgain = try engine.send(.timeAdvanced)
+
+    #expect(snoozed.status == .snoozed)
+    #expect(snoozed.reminderLevel == .ambient)
+    #expect(snoozed.snoozedUntil == setup.addingTimeInterval(45 * 60))
+    #expect(stillSnoozed.status == .snoozed)
+    #expect(eligibleAgain.status == .dueAmbient)
+    #expect(eligibleAgain.records.isEmpty)
+    #expect(eligibleAgain.cycle.startedAt == setup)
+}
+
+@Test("pause survives restart and resume recomputes from the existing cycle")
+func pauseAndResumePreserveHydrationContext() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let store = InMemoryHydrationStore()
+    let engine = try HydrationEngine(clock: clock, store: store)
+    clock.now.addTimeInterval(30 * 60)
+
+    let paused = try engine.send(.setPaused(true))
+    let restarted = try HydrationEngine(clock: clock, store: store)
+    let restoredPause = restarted.snapshot
+    clock.now.addTimeInterval(20 * 60)
+    let resumed = try restarted.send(.setPaused(false))
+
+    #expect(paused.status == .paused)
+    #expect(paused.reminderLevel == .hidden)
+    #expect(paused.records.isEmpty)
+    #expect(restoredPause.status == .paused)
+    #expect(resumed.status == .dueAmbient)
+    #expect(resumed.reminderLevel == .ambient)
+    #expect(resumed.cycle.startedAt == setup)
+    #expect(resumed.records.isEmpty)
+}
+
+@Test("disabling no-Agent fallback hides the clock-only ambient reminder")
+func noAgentFallbackCanBeDisabled() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let store = InMemoryHydrationStore()
+    let engine = try HydrationEngine(clock: clock, store: store)
+    clock.now.addTimeInterval(30 * 60)
+
+    let fallbackDisabled = try engine.send(.setNoAgentFallbackEnabled(false))
+    let agentAware = try engine.send(.agentActivity)
+    let restarted = try HydrationEngine(clock: clock, store: store)
+
+    #expect(fallbackDisabled.status == .dueAmbient)
+    #expect(fallbackDisabled.reminderLevel == .hidden)
+    #expect(agentAware.status == .dueAmbient)
+    #expect(agentAware.reminderLevel == .ambient)
+    #expect(!restarted.snapshot.settings.noAgentFallbackEnabled)
+    #expect(restarted.snapshot.status == .dueAmbient)
+    #expect(restarted.snapshot.reminderLevel == .hidden)
+}
+
+@Test("snooze requires fresh Agent activity after cooldown when fallback is disabled")
+func snoozeRequiresFreshAgentActivity() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    _ = try engine.send(.setNoAgentFallbackEnabled(false))
+    clock.now.addTimeInterval(30 * 60)
+    _ = try engine.send(.agentActivity)
+    _ = try engine.send(.snooze)
+    _ = try engine.send(.agentActivity)
+
+    clock.now.addTimeInterval(15 * 60)
+    let cooldownEnded = try engine.send(.timeAdvanced)
+    let nextOpportunity = try engine.send(.agentActivity)
+
+    #expect(cooldownEnded.status == .dueAmbient)
+    #expect(cooldownEnded.reminderLevel == .hidden)
+    #expect(cooldownEnded.records.isEmpty)
+    #expect(nextOpportunity.reminderLevel == .ambient)
+}
+
+@Test("undo removes exactly the just-created record and restores its due context")
+func undoRestoresPreviousDueContext() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+
+    let confirmed = try engine.send(.confirmSip)
+    let recordID = try #require(confirmed.records.first?.id)
+    let undone = try engine.send(.undoSip(recordID))
+    let duplicateUndo = try engine.send(.undoSip(recordID))
+
+    #expect(confirmed.reminderLevel == .confirmation)
+    #expect(confirmed.undoableDrinkRecord?.id == recordID)
+    #expect(confirmed.todayEstimatedMilliliters == 25)
+    #expect(undone.records.isEmpty)
+    #expect(undone.todayEstimatedMilliliters == 0)
+    #expect(undone.status == .dueAmbient)
+    #expect(undone.reminderLevel == .ambient)
+    #expect(undone.cycle.startedAt == setup)
+    #expect(duplicateUndo.records.isEmpty)
+}
+
+@Test("undoing a drink made during snooze restores the snooze deadline")
+func undoRestoresSnoozedContext() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    let snoozed = try engine.send(.snooze)
+
+    let confirmed = try engine.send(.confirmSip)
+    let recordID = try #require(confirmed.undoableDrinkRecord?.id)
+    let undone = try engine.send(.undoSip(recordID))
+
+    #expect(undone.status == .snoozed)
+    #expect(undone.snoozedUntil == snoozed.snoozedUntil)
+    #expect(undone.reminderLevel == .ambient)
+    #expect(undone.records.isEmpty)
+}
+
+@Test("undo affordance expires after ten seconds")
+func undoAffordanceExpires() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    let confirmed = try engine.send(.confirmSip)
+    let recordID = try #require(confirmed.undoableDrinkRecord?.id)
+
+    clock.now.addTimeInterval(9)
+    let stillUndoable = try engine.send(.timeAdvanced)
+    clock.now.addTimeInterval(1)
+    let expired = try engine.send(.timeAdvanced)
+    let lateUndo = try engine.send(.undoSip(recordID))
+
+    #expect(stillUndoable.reminderLevel == .confirmation)
+    #expect(expired.reminderLevel == .hidden)
+    #expect(expired.undoableDrinkRecord == nil)
+    #expect(lateUndo.records.count == 1)
+}
+
+@Test("undo restores the old cycle start while retaining a newly selected interval")
+func undoRetainsIntervalSetting() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    let confirmed = try engine.send(.confirmSip)
+    let recordID = try #require(confirmed.undoableDrinkRecord?.id)
+
+    _ = try engine.send(.setReminderInterval(45 * 60))
+    let undone = try engine.send(.undoSip(recordID))
+
+    #expect(undone.settings.reminderInterval == 45 * 60)
+    #expect(undone.cycle.startedAt == setup)
+    #expect(undone.cycle.reminderInterval == 45 * 60)
+    #expect(undone.status == .accumulating)
 }
 
 @Test("today's estimated total follows the injected local calendar day")
@@ -220,6 +422,38 @@ func ordinaryCodexActivityIsReadOnly() throws {
     #expect(afterActivity.reminderLevel == .ambient)
     #expect(afterActivity.records.isEmpty)
     #expect(afterActivity.cycle.startedAt == setup)
+}
+
+@Test("Codex activity supplies the Agent-aware reminder when fallback is disabled")
+func codexActivityEnablesAgentAwareReminder() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(
+        clock: clock,
+        store: InMemoryHydrationStore()
+    )
+    _ = try engine.send(.setNoAgentFallbackEnabled(false))
+    clock.now.addTimeInterval(30 * 60)
+
+    let clockOnly = try engine.send(.timeAdvanced)
+    let agentAware = try engine.send(
+        .agentEvent(
+            AgentEvent(
+                kind: .toolUsed,
+                sessionID: "synthetic-session",
+                timestamp: clock.now,
+                role: .root,
+                attention: .none,
+                toolClassification: .ordinary
+            )
+        )
+    )
+
+    #expect(clockOnly.status == .dueAmbient)
+    #expect(clockOnly.reminderLevel == .hidden)
+    #expect(agentAware.status == .dueAmbient)
+    #expect(agentAware.reminderLevel == .ambient)
+    #expect(agentAware.records.isEmpty)
 }
 
 private final class TestClock: HydrationClock {

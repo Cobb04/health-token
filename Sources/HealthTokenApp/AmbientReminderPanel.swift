@@ -32,14 +32,19 @@ final class AmbientReminderPanelController {
     }
 
     private func render(_ snapshot: HydrationSnapshot) {
-        guard snapshot.reminderLevel == .ambient else {
+        guard snapshot.reminderLevel != .hidden else {
             panel.orderOut(nil)
             return
         }
 
-        let size = snapshot.detailsExpanded
-            ? NSSize(width: 292, height: 176)
-            : NSSize(width: 48, height: 48)
+        let size: NSSize
+        if snapshot.reminderLevel == .confirmation {
+            size = NSSize(width: 292, height: 142)
+        } else if snapshot.detailsExpanded {
+            size = NSSize(width: 292, height: 224)
+        } else {
+            size = NSSize(width: 48, height: 48)
+        }
         positionPanel(size: size)
 
         if !panel.isVisible {

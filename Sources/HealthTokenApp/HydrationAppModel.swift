@@ -141,6 +141,30 @@ final class HydrationAppModel: ObservableObject {
         updateIntegrationError()
     }
 
+    func snooze() {
+        send(.snooze)
+    }
+
+    func setPaused(_ isPaused: Bool) {
+        send(.setPaused(isPaused))
+    }
+
+    func setSipEstimate(_ estimate: SipEstimate) {
+        send(.setSipEstimate(estimate))
+    }
+
+    func setReminderInterval(_ interval: TimeInterval) {
+        send(.setReminderInterval(interval))
+    }
+
+    func setNoAgentFallbackEnabled(_ isEnabled: Bool) {
+        send(.setNoAgentFallbackEnabled(isEnabled))
+    }
+
+    func undoSip(_ recordID: UUID) {
+        send(.undoSip(recordID))
+    }
+
     private func send(_ action: HydrationEngine.Action) {
         do {
             snapshot = try engine.send(action)

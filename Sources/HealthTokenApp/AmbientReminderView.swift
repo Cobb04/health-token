@@ -8,7 +8,9 @@ struct AmbientReminderView: View {
 
     var body: some View {
         Group {
-            if model.snapshot.detailsExpanded {
+            if model.snapshot.reminderLevel == .confirmation {
+                confirmationCard
+            } else if model.snapshot.detailsExpanded {
                 detailsCard
             } else {
                 dropButton
@@ -61,17 +63,57 @@ struct AmbientReminderView: View {
             .buttonStyle(.borderedProminent)
             .tint(.cyan)
             .accessibilityLabel("喝了一口，记录约 \(sipMilliliters) 毫升")
+
+            Button(action: model.snooze) {
+                Text("稍后 · 15 分钟")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("稍后提醒，强提醒暂停十五分钟")
         }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18)
-                .stroke(contrast == .increased ? .white : .white.opacity(0.18))
-        )
-        .padding(4)
+        .modifier(ReminderCardStyle(increasedContrast: contrast == .increased))
+    }
+
+    private var confirmationCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("已记录约 \(confirmedMilliliters) mL", systemImage: "checkmark.circle.fill")
+                .font(.headline)
+                .foregroundStyle(.cyan)
+            Text("今日估算总量：约 \(model.snapshot.todayEstimatedMilliliters) mL")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            if let record = model.snapshot.undoableDrinkRecord {
+                Button("撤销刚才的记录") {
+                    model.undoSip(record.id)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("撤销刚才约 \(confirmedMilliliters) 毫升的饮水记录")
+            }
+        }
+        .modifier(ReminderCardStyle(increasedContrast: contrast == .increased))
     }
 
     private var sipMilliliters: Int {
         model.snapshot.settings.sipEstimate.milliliters
+    }
+
+    private var confirmedMilliliters: Int {
+        model.snapshot.undoableDrinkRecord?.estimatedMilliliters ?? 0
+    }
+}
+
+private struct ReminderCardStyle: ViewModifier {
+    let increasedContrast: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(16)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(increasedContrast ? .white : .white.opacity(0.18))
+            )
+            .padding(4)
     }
 }
