@@ -541,7 +541,7 @@ func preDueSubagentDoesNotCreateReminder() throws {
     #expect(due.records.isEmpty)
 }
 
-@Test("Subagent completion and removal downgrade C without clearing hydration due")
+@Test("Subagent completion and removal downgrade a strong reminder without clearing hydration due")
 func terminalSubagentEventsDowngradeStrongReminder() throws {
     for terminalKind in [AgentEvent.Kind.completed, .sessionRemoved] {
         let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
@@ -605,7 +605,7 @@ func rootAndSubagentSessionsAreIsolated() throws {
     #expect(childCompleted.reminderLevel == .ambient)
 }
 
-@Test("confirming from Subagent-triggered C uses the existing drink completion path")
+@Test("confirming from a Subagent-triggered strong reminder uses the existing drink completion path")
 func subagentStrongReminderUsesExistingDrinkRecordPath() throws {
     let setup = Date(timeIntervalSince1970: 1_800_000_000)
     let clock = TestClock(now: setup)

@@ -76,7 +76,14 @@ final class HydrationAppModel: ObservableObject {
                 ? rolloutMonitor.poll(observedAt: Date())
                 : []
             let events = (hookEvents + rolloutEvents)
-                .sorted { $0.timestamp < $1.timestamp }
+                .enumerated()
+                .sorted { left, right in
+                    if left.element.timestamp == right.element.timestamp {
+                        return left.offset < right.offset
+                    }
+                    return left.element.timestamp < right.element.timestamp
+                }
+                .map { $0.element }
             for event in events {
                 snapshot = try engine.send(.agentEvent(event))
             }

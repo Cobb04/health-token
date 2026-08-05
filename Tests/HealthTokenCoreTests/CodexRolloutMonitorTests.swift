@@ -131,6 +131,17 @@ func explicitThreadSpawnStartsSubagentSession() throws {
     #expect(aborts.first?.role == .subagent)
 }
 
+@Test("same-poll Subagent completion remains ordered after session start")
+func samePollSubagentCompletionPreservesLifecycleOrder() throws {
+    let events = try pollNewRollout(lines: [
+        #"{"type":"session_meta","payload":{"id":"child-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session"}}}}}"#,
+        #"{"type":"event_msg","payload":{"type":"task_complete"}}"#
+    ])
+
+    #expect(events.map(\.kind) == [.sessionStarted, .completed])
+    #expect(events.map(\.sessionID) == ["child-session", "child-session"])
+}
+
 @Test("rollout metadata fails closed unless thread-spawn identity is complete")
 func rolloutMetadataFailsClosed() throws {
     let root = try pollNewRollout(lines: [

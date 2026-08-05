@@ -89,13 +89,9 @@ public final class CodexRolloutMonitor {
                     try isRecentlyActive(rolloutURL, observedAt: observedAt),
                     try !hasTerminalEvent(in: rolloutURL, size: size)
                 {
-                    events.append(AgentEvent(
-                        kind: .sessionStarted,
-                        sessionID: context.sessionID,
-                        parentSessionID: context.parentSessionID,
-                        timestamp: observedAt,
-                        role: .subagent,
-                        attention: .none
+                    events.append(sessionStartedEvent(
+                        for: context,
+                        observedAt: observedAt
                     ))
                 }
             }
@@ -143,13 +139,9 @@ public final class CodexRolloutMonitor {
                     cursor.role = context.role
                     cursor.parentSessionID = context.parentSessionID
                     if isNewSession, context.role == .subagent {
-                        events.append(AgentEvent(
-                            kind: .sessionStarted,
-                            sessionID: context.sessionID,
-                            parentSessionID: context.parentSessionID,
-                            timestamp: observedAt,
-                            role: .subagent,
-                            attention: .none
+                        events.append(sessionStartedEvent(
+                            for: context,
+                            observedAt: observedAt
                         ))
                     }
                     continue
@@ -168,7 +160,7 @@ public final class CodexRolloutMonitor {
             cursors[rolloutURL] = cursor
         }
 
-        return events.sorted { $0.timestamp < $1.timestamp }
+        return events
     }
 
     public func reset() {
@@ -273,6 +265,20 @@ public final class CodexRolloutMonitor {
             return nil
         }
         return parentSessionID
+    }
+
+    private func sessionStartedEvent(
+        for context: SessionContext,
+        observedAt: Date
+    ) -> AgentEvent {
+        AgentEvent(
+            kind: .sessionStarted,
+            sessionID: context.sessionID,
+            parentSessionID: context.parentSessionID,
+            timestamp: observedAt,
+            role: .subagent,
+            attention: .none
+        )
     }
 
     private func isRecentlyActive(
