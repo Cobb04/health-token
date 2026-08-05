@@ -3,6 +3,7 @@ import SwiftUI
 
 struct AmbientReminderView: View {
     @ObservedObject var model: HydrationAppModel
+    let onIntentionalInteraction: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -19,6 +20,12 @@ struct AmbientReminderView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .id(transitionIdentity)
+        .transition(reminderTransition)
+        .animation(
+            reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28),
+            value: transitionIdentity
+        )
     }
 
     private var strongReminder: some View {
@@ -34,7 +41,7 @@ struct AmbientReminderView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Button(action: model.confirmSip) {
+                Button(action: { intentionally(model.confirmSip) }) {
                     Label("喝了一口", systemImage: "cup.and.saucer.fill")
                         .frame(maxWidth: .infinity)
                 }
@@ -45,12 +52,22 @@ struct AmbientReminderView: View {
         }
         .modifier(ReminderCardStyle(increasedContrast: contrast == .increased))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("强饮水提醒")
+        .accessibilityLabel(accessibilityPresentation.nonColorCue)
     }
 
     private var dropButton: some View {
-        Button(action: model.openReminder) {
-            Image(systemName: "drop.fill")
+        Button(action: { intentionally(model.openReminder) }) {
+            ZStack {
+                Image(systemName: "drop.fill")
+                if model.snapshot.status == .snoozed {
+                    Image(systemName: "clock.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .offset(x: 12, y: 11)
+                } else if model.integrationHealth == .unavailable {
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 10, weight: .black))
+                }
+            }
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(contrast == .increased ? Color.white : Color.cyan)
                 .shadow(
@@ -62,7 +79,7 @@ struct AmbientReminderView: View {
                 .overlay(Circle().stroke(.white.opacity(0.2)))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("饮水提醒，点击展开")
+        .accessibilityLabel("\(accessibilityPresentation.nonColorCue)，点击展开")
     }
 
     private var detailsCard: some View {
@@ -72,7 +89,7 @@ struct AmbientReminderView: View {
                     .font(.headline)
                     .foregroundStyle(.cyan)
                 Spacer()
-                Button(action: model.closeReminder) {
+                Button(action: { intentionally(model.closeReminder) }) {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.plain)
@@ -85,7 +102,7 @@ struct AmbientReminderView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            Button(action: model.confirmSip) {
+            Button(action: { intentionally(model.confirmSip) }) {
                 Text("喝了一口 · 约 \(sipMilliliters) mL")
                     .frame(maxWidth: .infinity)
             }
@@ -93,12 +110,24 @@ struct AmbientReminderView: View {
             .tint(.cyan)
             .accessibilityLabel("喝了一口，记录约 \(sipMilliliters) 毫升")
 
-            Button(action: model.snooze) {
+            Button(action: { intentionally(model.snooze) }) {
                 Text("稍后 · 15 分钟")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .accessibilityLabel("稍后提醒，强提醒暂停十五分钟")
+            .accessibilityLabel("稍后提醒十五分钟")
+
+            HStack {
+                Button("暂停") {
+                    intentionally { model.setPaused(true) }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("暂停 Health Token")
+
+                Spacer()
+
+                settingsMenu
+            }
         }
         .modifier(ReminderCardStyle(increasedContrast: contrast == .increased))
     }
@@ -114,7 +143,7 @@ struct AmbientReminderView: View {
 
             if let record = model.snapshot.undoableDrinkRecord {
                 Button("撤销刚才的记录") {
-                    model.undoSip(record.id)
+                    intentionally { model.undoSip(record.id) }
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("撤销刚才约 \(confirmedMilliliters) 毫升的饮水记录")
@@ -130,6 +159,69 @@ struct AmbientReminderView: View {
     private var confirmedMilliliters: Int {
         model.snapshot.undoableDrinkRecord?.estimatedMilliliters ?? 0
     }
+
+    private var settingsMenu: some View {
+        Menu("设置") {
+            Picker("每口估算", selection: sipEstimate) {
+                ForEach(SipEstimate.allCases, id: \.self) { estimate in
+                    Text("约 \(estimate.milliliters) mL").tag(estimate)
+                }
+            }
+            Picker("提醒间隔", selection: reminderInterval) {
+                ForEach(Self.reminderIntervalOptions, id: \.self) { interval in
+                    Text("\(Int(interval / 60)) 分钟").tag(interval)
+                }
+            }
+        }
+        .accessibilityLabel("饮水设置")
+    }
+
+    private var sipEstimate: Binding<SipEstimate> {
+        Binding(
+            get: { model.snapshot.settings.sipEstimate },
+            set: { model.setSipEstimate($0) }
+        )
+    }
+
+    private var reminderInterval: Binding<TimeInterval> {
+        Binding(
+            get: { model.snapshot.settings.reminderInterval },
+            set: { model.setReminderInterval($0) }
+        )
+    }
+
+    private var accessibilityPresentation: ReminderAccessibilityPresentation {
+        ReminderAccessibilityPresentation(
+            status: model.snapshot.status,
+            reminderLevel: model.snapshot.reminderLevel,
+            integrationHealth: model.integrationHealth,
+            isExpanded: model.snapshot.detailsExpanded,
+            sipMilliliters: sipMilliliters
+        )
+    }
+
+    private var transitionIdentity: String {
+        "\(model.snapshot.reminderLevel.rawValue)-\(model.snapshot.detailsExpanded)"
+    }
+
+    private var reminderTransition: AnyTransition {
+        let policy = ReminderTransitionPolicy(reduceMotion: reduceMotion)
+        return policy.usesScale
+            ? .scale(scale: 0.96, anchor: .top).combined(with: .opacity)
+            : .opacity
+    }
+
+    private func intentionally(_ action: () -> Void) {
+        onIntentionalInteraction()
+        action()
+    }
+
+    private static let reminderIntervalOptions: [TimeInterval] = [
+        15 * 60,
+        30 * 60,
+        45 * 60,
+        60 * 60
+    ]
 }
 
 private struct HealthTokenPixelCharacter: View {

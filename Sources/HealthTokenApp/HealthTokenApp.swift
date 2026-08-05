@@ -36,5 +36,6 @@ final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        panelController?.stop()
     }
 }

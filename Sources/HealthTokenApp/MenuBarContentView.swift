@@ -14,6 +14,9 @@ struct MenuBarContentView: View {
         Button(model.snapshot.status == .paused ? "恢复 Health Token" : "暂停 Health Token") {
             model.setPaused(model.snapshot.status != .paused)
         }
+        .accessibilityLabel(
+            model.snapshot.status == .paused ? "恢复 Health Token" : "暂停 Health Token"
+        )
 
         Divider()
 
@@ -47,14 +50,17 @@ struct MenuBarContentView: View {
                 Text("约 \(estimate.milliliters) mL").tag(estimate)
             }
         }
+        .accessibilityLabel("每口饮水估算设置")
 
         Picker("提醒间隔", selection: reminderInterval) {
             ForEach(Self.reminderIntervalOptions, id: \.self) { interval in
                 Text("\(Int(interval / 60)) 分钟").tag(interval)
             }
         }
+        .accessibilityLabel("饮水提醒间隔设置")
 
         Toggle("无 Agent 时显示低干扰提醒", isOn: noAgentFallbackEnabled)
+            .accessibilityLabel("无 Agent 时显示低干扰提醒")
 
         if let persistenceError = model.persistenceError {
             Divider()

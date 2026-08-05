@@ -1235,6 +1235,58 @@ func mixedHookAttentionWaitsForCorrelatedResolution() throws {
     }
 }
 
+@Test("daily acceptance flow returns to a new cycle after an approximate sip")
+func dailyAcceptanceFlowStartsNewCycle() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: start)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+
+    clock.now.addTimeInterval(30 * 60)
+    let dueB = try engine.send(.timeAdvanced)
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "acceptance-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    let qualifyingC = engine.snapshot
+    let needsUserB = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "acceptance-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+    _ = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "acceptance-root",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "acceptance-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    let freshC = engine.snapshot
+    let confirmed = try engine.send(.confirmSip)
+
+    #expect(dueB.reminderLevel == .ambient)
+    #expect(qualifyingC.reminderLevel == .strong)
+    #expect(needsUserB.reminderLevel == .ambient)
+    #expect(freshC.reminderLevel == .strong)
+    #expect(confirmed.todayEstimatedMilliliters == 25)
+    #expect(confirmed.records.last?.estimatedMilliliters == 25)
+    #expect(confirmed.cycle.startedAt == clock.now)
+    #expect(confirmed.status == .accumulating)
+}
+
 private func agentEvent(
     _ kind: AgentEvent.Kind,
     sessionID: String,
