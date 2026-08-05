@@ -41,6 +41,7 @@ public final class HydrationEngine {
 
     private struct AgentSessionActivity {
         var qualifyingToolCount: Int
+        var hasActiveSubagentSignal: Bool
         var lastActivityAt: Date
     }
 
@@ -242,7 +243,7 @@ public final class HydrationEngine {
             return .snoozed
         }
 
-        return hasAutonomousToolSignal ? .dueStrong : .dueAmbient
+        return hasAutonomousAgentSignal ? .dueStrong : .dueAmbient
     }
 
     private var reminderLevel: ReminderLevel {
@@ -264,8 +265,10 @@ public final class HydrationEngine {
         }
     }
 
-    private var hasAutonomousToolSignal: Bool {
-        agentSessions.values.contains { $0.qualifyingToolCount >= 3 }
+    private var hasAutonomousAgentSignal: Bool {
+        agentSessions.values.contains {
+            $0.hasActiveSubagentSignal || $0.qualifyingToolCount >= 3
+        }
     }
 
     private func processAgentEvent(_ event: AgentEvent) {
@@ -273,11 +276,17 @@ public final class HydrationEngine {
         case .completed, .aborted, .sessionRemoved:
             agentSessions.removeValue(forKey: event.sessionID)
             return
-        case .sessionStarted, .promptSubmitted, .attentionChanged:
+        case .sessionStarted:
             agentSessions[event.sessionID] = AgentSessionActivity(
                 qualifyingToolCount: 0,
+                hasActiveSubagentSignal: event.role == .subagent
+                    && status.isHydrationDue,
                 lastActivityAt: event.timestamp
             )
+        case .promptSubmitted, .attentionChanged:
+            updateAgentSession(event.sessionID, at: event.timestamp) { activity in
+                activity.qualifyingToolCount = 0
+            }
         case .planUpdated:
             updateAgentSession(event.sessionID, at: event.timestamp) { _ in }
         case .toolUsed:
@@ -304,6 +313,7 @@ public final class HydrationEngine {
     ) {
         var activity = agentSessions[sessionID] ?? AgentSessionActivity(
             qualifyingToolCount: 0,
+            hasActiveSubagentSignal: false,
             lastActivityAt: timestamp
         )
         activity.lastActivityAt = timestamp

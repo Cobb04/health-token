@@ -80,6 +80,7 @@ public enum AgentEventAdapter {
         return AgentEvent(
             kind: kind,
             sessionID: normalizedSessionID,
+            parentSessionID: isSubagent ? sessionID : nil,
             timestamp: observedAt,
             role: isSubagent ? .subagent : .root,
             attention: attention(for: hookEvent),
@@ -91,6 +92,7 @@ public enum AgentEventAdapter {
         _ data: Data,
         sessionID: String,
         role: AgentRole,
+        parentSessionID: String? = nil,
         observedAt: Date
     ) -> AgentEvent? {
         guard
@@ -107,6 +109,7 @@ public enum AgentEventAdapter {
         return AgentEvent(
             kind: .aborted,
             sessionID: sessionID,
+            parentSessionID: parentSessionID,
             timestamp: observedAt,
             role: role,
             attention: .none

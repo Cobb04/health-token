@@ -1,10 +1,17 @@
 import Foundation
 
 public final class CodexRolloutMonitor {
+    private struct SessionContext {
+        let sessionID: String
+        let role: AgentRole
+        let parentSessionID: String?
+    }
+
     private struct Cursor {
         var offset: UInt64
         var sessionID: String?
         var role: AgentRole
+        var parentSessionID: String?
         var remainder = Data()
     }
 
@@ -47,6 +54,7 @@ public final class CodexRolloutMonitor {
             return AgentEvent(
                 kind: .sessionRemoved,
                 sessionID: sessionID,
+                parentSessionID: cursor.parentSessionID,
                 timestamp: observedAt,
                 role: cursor.role,
                 attention: .none
@@ -61,7 +69,8 @@ public final class CodexRolloutMonitor {
                 cursors[rolloutURL] = Cursor(
                     offset: size,
                     sessionID: context?.sessionID,
-                    role: context?.role ?? .root
+                    role: context?.role ?? .root,
+                    parentSessionID: context?.parentSessionID
                 )
             }
             initialized = true
@@ -72,9 +81,19 @@ public final class CodexRolloutMonitor {
         for rolloutURL in rolloutURLs {
             let size = try fileSize(of: rolloutURL)
             var cursor = cursors[rolloutURL]
-                ?? Cursor(offset: 0, sessionID: nil, role: .root)
+                ?? Cursor(
+                    offset: 0,
+                    sessionID: nil,
+                    role: .root,
+                    parentSessionID: nil
+                )
             if cursor.offset > size {
-                cursor = Cursor(offset: 0, sessionID: nil, role: .root)
+                cursor = Cursor(
+                    offset: 0,
+                    sessionID: nil,
+                    role: .root,
+                    parentSessionID: nil
+                )
             }
             guard cursor.offset < size else {
                 cursors[rolloutURL] = cursor
@@ -104,8 +123,20 @@ public final class CodexRolloutMonitor {
 
             for line in lines {
                 if let context = sessionContext(from: line) {
+                    let isNewSession = cursor.sessionID != context.sessionID
                     cursor.sessionID = context.sessionID
                     cursor.role = context.role
+                    cursor.parentSessionID = context.parentSessionID
+                    if isNewSession, context.role == .subagent {
+                        events.append(AgentEvent(
+                            kind: .sessionStarted,
+                            sessionID: context.sessionID,
+                            parentSessionID: context.parentSessionID,
+                            timestamp: observedAt,
+                            role: .subagent,
+                            attention: .none
+                        ))
+                    }
                     continue
                 }
                 guard let sessionID = cursor.sessionID else { continue }
@@ -113,6 +144,7 @@ public final class CodexRolloutMonitor {
                     line,
                     sessionID: sessionID,
                     role: cursor.role,
+                    parentSessionID: cursor.parentSessionID,
                     observedAt: observedAt
                 ) {
                     events.append(event)
@@ -175,7 +207,7 @@ public final class CodexRolloutMonitor {
     private func sessionContext(
         in url: URL,
         size: UInt64
-    ) throws -> (sessionID: String, role: AgentRole)? {
+    ) throws -> SessionContext? {
         let prefix = try read(
             url,
             offset: 0,
@@ -191,7 +223,7 @@ public final class CodexRolloutMonitor {
 
     private func sessionContext(
         from data: Data
-    ) -> (sessionID: String, role: AgentRole)? {
+    ) -> SessionContext? {
         guard
             let object = try? JSONSerialization.jsonObject(with: data),
             let record = object as? [String: Any],
@@ -202,9 +234,27 @@ public final class CodexRolloutMonitor {
         else {
             return nil
         }
-        let source = payload["source"] as? [String: Any]
-        let role: AgentRole = source?["subagent"] == nil ? .root : .subagent
-        return (sessionID, role)
+        let parentSessionID = verifiedParentSessionID(in: payload)
+        return SessionContext(
+            sessionID: sessionID,
+            role: parentSessionID == nil ? .root : .subagent,
+            parentSessionID: parentSessionID
+        )
+    }
+
+    private func verifiedParentSessionID(
+        in payload: [String: Any]
+    ) -> String? {
+        guard
+            let source = payload["source"] as? [String: Any],
+            let subagent = source["subagent"] as? [String: Any],
+            let threadSpawn = subagent["thread_spawn"] as? [String: Any],
+            let parentSessionID = threadSpawn["parent_thread_id"] as? String,
+            !parentSessionID.isEmpty
+        else {
+            return nil
+        }
+        return parentSessionID
     }
 
     private func completeLines(

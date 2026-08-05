@@ -6,9 +6,12 @@ the top center of the active display. Opening the drop lets you record one
 deliberate sip, snooze for 15 minutes, undo a just-created record, and see
 today's estimated total. The menu bar provides pause/resume, 15/25/35 mL sip
 presets, 15/30/45/60-minute reminder intervals, and a no-Agent fallback toggle.
-When hydration is already due, three qualifying tool calls in one active Codex
-turn temporarily upgrade the water drop to an original pixel character holding
-a cup. The character records through the same deliberate sip action as the
+When hydration is already due, either a verified Codex Subagent session or
+three qualifying tool calls in one active Codex turn temporarily upgrades the
+water drop to an original pixel character holding a cup. Subagents are
+classified only from explicit `source.subagent.thread_spawn` rollout metadata,
+never from working directory, timing, process count, nickname, or activity
+volume. The character records through the same deliberate sip action as the
 ambient reminder.
 
 Every displayed volume is an approximation. Health Token does not show a
@@ -52,17 +55,19 @@ The menu bar reports:
 
 The adapter follows the public [Codex hooks
 contract](https://developers.openai.com/codex/hooks). A bounded incremental
-tail of recent local rollout files supplies turn-abort events that hooks do not
-currently expose; startup begins at the file tail so completed history is not
-replayed. Inputs normalize to `AgentEvent` values with these kinds:
+tail of recent local rollout files supplies verified Subagent metadata and
+turn-abort events that hooks do not currently expose; startup begins at the
+file tail so completed history is not replayed. Inputs normalize to `AgentEvent`
+values with these kinds:
 `sessionStarted`, `promptSubmitted`, `planUpdated`, `toolUsed`,
 `attentionChanged`, `completed`, `aborted`, and `sessionRemoved`. Every event
-contains only session identity, receipt timestamp, root/Subagent role,
-attention state, and an optional `ordinary`, `plan`, or `userInput` tool
-classification.
+contains only session identity, optional verified parent-session identity,
+receipt timestamp, root/Subagent role, attention state, and an optional
+`ordinary`, `plan`, or `userInput` tool classification.
 
-Qualifying tool streaks are isolated per session and reset by user input,
-completion, abort, session removal, or five minutes without session activity.
+Qualifying tool streaks and verified Subagent signals are isolated per session.
+They reset on completion, abort, session removal, or five minutes without
+session activity; user input also resets a qualifying tool streak.
 Plan updates and metadata, telemetry, or Health Token integration operations do
 not contribute to a streak. Completion or expiry collapses the pixel reminder
 back to the persistent water drop without recording a drink or clearing the

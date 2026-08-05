@@ -128,6 +128,8 @@ func subagentHooksNormalize() throws {
     #expect(stopped.kind == .completed)
     #expect(started.sessionID == "synthetic-subagent")
     #expect(stopped.sessionID == "synthetic-subagent")
+    #expect(started.parentSessionID == "root")
+    #expect(stopped.parentSessionID == "root")
     #expect(started.role == .subagent)
     #expect(stopped.role == .subagent)
 }
@@ -209,6 +211,7 @@ func rolloutAbortNormalizes() throws {
             line,
             sessionID: "synthetic-session",
             role: .root,
+            parentSessionID: "synthetic-parent",
             observedAt: observedAt
         )
     )
@@ -218,6 +221,7 @@ func rolloutAbortNormalizes() throws {
 
     #expect(event.kind == .aborted)
     #expect(event.sessionID == "synthetic-session")
+    #expect(event.parentSessionID == "synthetic-parent")
     #expect(event.timestamp == observedAt)
     #expect(event.role == .root)
     #expect(event.attention == .none)

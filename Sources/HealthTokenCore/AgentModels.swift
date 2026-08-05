@@ -41,6 +41,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
 
     public let kind: Kind
     public let sessionID: String
+    public let parentSessionID: String?
     public let timestamp: Date
     public let role: AgentRole
     public let attention: AgentAttention
@@ -49,6 +50,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     public init(
         kind: Kind,
         sessionID: String,
+        parentSessionID: String? = nil,
         timestamp: Date,
         role: AgentRole,
         attention: AgentAttention,
@@ -56,6 +58,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     ) {
         self.kind = kind
         self.sessionID = sessionID
+        self.parentSessionID = parentSessionID
         self.timestamp = timestamp
         self.role = role
         self.attention = attention
