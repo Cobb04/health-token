@@ -498,6 +498,138 @@ func qualifyingToolStreakEscalatesOnThirdTool() throws {
     #expect(third.reminderLevel.rawValue == "strong")
 }
 
+@Test("a verified active Subagent upgrades an already-due reminder")
+func verifiedSubagentEscalatesDueReminder() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+
+    let escalated = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child-session",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "parent-session"
+    )))
+
+    #expect(escalated.status == .dueStrong)
+    #expect(escalated.reminderLevel == .strong)
+    #expect(escalated.records.isEmpty)
+}
+
+@Test("a Subagent that starts before hydration is due does not create or carry a reminder")
+func preDueSubagentDoesNotCreateReminder() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+
+    let started = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child-session",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "parent-session"
+    )))
+    clock.now.addTimeInterval(30 * 60)
+    let due = try engine.send(.timeAdvanced)
+
+    #expect(started.status == .accumulating)
+    #expect(started.reminderLevel == .hidden)
+    #expect(due.status == .dueAmbient)
+    #expect(due.reminderLevel == .ambient)
+    #expect(due.records.isEmpty)
+}
+
+@Test("Subagent completion and removal downgrade a strong reminder without clearing hydration due")
+func terminalSubagentEventsDowngradeStrongReminder() throws {
+    for terminalKind in [AgentEvent.Kind.completed, .sessionRemoved] {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+        let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+        clock.now.addTimeInterval(30 * 60)
+        _ = try engine.send(.agentEvent(agentEvent(
+            .sessionStarted,
+            sessionID: "child-session",
+            at: clock.now,
+            role: .subagent,
+            parentSessionID: "parent-session"
+        )))
+
+        let downgraded = try engine.send(.agentEvent(agentEvent(
+            terminalKind,
+            sessionID: "child-session",
+            at: clock.now,
+            role: .subagent,
+            parentSessionID: "parent-session"
+        )))
+
+        #expect(downgraded.status == .dueAmbient)
+        #expect(downgraded.reminderLevel == .ambient)
+        #expect(downgraded.records.isEmpty)
+        #expect(downgraded.cycle.startedAt == clock.now.addingTimeInterval(-30 * 60))
+    }
+}
+
+@Test("root and Subagent sessions remain isolated by stable session identifiers")
+func rootAndSubagentSessionsAreIsolated() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child-a",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "root-a"
+    )))
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "root-b",
+        at: clock.now
+    )))
+
+    let rootCompleted = try engine.send(.agentEvent(agentEvent(
+        .completed,
+        sessionID: "root-b",
+        at: clock.now
+    )))
+    let childCompleted = try engine.send(.agentEvent(agentEvent(
+        .completed,
+        sessionID: "child-a",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "root-a"
+    )))
+
+    #expect(rootCompleted.reminderLevel == .strong)
+    #expect(childCompleted.reminderLevel == .ambient)
+}
+
+@Test("confirming from a Subagent-triggered strong reminder uses the existing drink completion path")
+func subagentStrongReminderUsesExistingDrinkRecordPath() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child-session",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "parent-session"
+    )))
+
+    let confirmed = try engine.send(.confirmSip)
+    let duplicate = try engine.send(.confirmSip)
+
+    #expect(confirmed.records.count == 1)
+    #expect(confirmed.records.first?.sourceAction == .sipConfirmation)
+    #expect(confirmed.todayEstimatedMilliliters == 25)
+    #expect(confirmed.cycle.startedAt == clock.now)
+    #expect(confirmed.status == .accumulating)
+    #expect(duplicate.records.count == 1)
+}
+
 @Test("tool streaks are isolated by active Codex session")
 func toolStreaksAreSessionScoped() throws {
     let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
@@ -726,13 +858,16 @@ private func agentEvent(
     _ kind: AgentEvent.Kind,
     sessionID: String,
     at timestamp: Date,
+    role: AgentRole = .root,
+    parentSessionID: String? = nil,
     tool: AgentToolClassification? = nil
 ) -> AgentEvent {
     AgentEvent(
         kind: kind,
         sessionID: sessionID,
+        parentSessionID: parentSessionID,
         timestamp: timestamp,
-        role: .root,
+        role: role,
         attention: .none,
         toolClassification: tool
     )

@@ -1,10 +1,24 @@
 import Foundation
 
 public final class CodexRolloutMonitor {
+    private struct SessionContext {
+        let sessionID: String
+        let role: AgentRole
+        let parentSessionID: String?
+    }
+
     private struct Cursor {
+        static let empty = Cursor(
+            offset: 0,
+            sessionID: nil,
+            role: .root,
+            parentSessionID: nil
+        )
+
         var offset: UInt64
         var sessionID: String?
         var role: AgentRole
+        var parentSessionID: String?
         var remainder = Data()
     }
 
@@ -14,6 +28,7 @@ public final class CodexRolloutMonitor {
     private let maxFiles: Int
     private let maxScannedEntries: Int
     private let maxBytesPerFile: Int
+    private let activeSessionInterval: TimeInterval
     private var cursors: [URL: Cursor] = [:]
     private var initialized = false
 
@@ -22,13 +37,15 @@ public final class CodexRolloutMonitor {
         fileManager: FileManager = .default,
         maxFiles: Int = 8,
         maxScannedEntries: Int = 512,
-        maxBytesPerFile: Int = 64 * 1024
+        maxBytesPerFile: Int = 64 * 1024,
+        activeSessionInterval: TimeInterval = 5 * 60
     ) {
         self.sessionsURL = sessionsURL
         self.fileManager = fileManager
         self.maxFiles = maxFiles
         self.maxScannedEntries = maxScannedEntries
         self.maxBytesPerFile = maxBytesPerFile
+        self.activeSessionInterval = activeSessionInterval
     }
 
     public func poll(observedAt: Date) throws -> [AgentEvent] {
@@ -47,6 +64,7 @@ public final class CodexRolloutMonitor {
             return AgentEvent(
                 kind: .sessionRemoved,
                 sessionID: sessionID,
+                parentSessionID: cursor.parentSessionID,
                 timestamp: observedAt,
                 role: cursor.role,
                 attention: .none
@@ -55,26 +73,38 @@ public final class CodexRolloutMonitor {
         cursors = cursors.filter { activeURLs.contains($0.key) }
 
         if !initialized {
+            var events: [AgentEvent] = []
             for rolloutURL in rolloutURLs {
                 let size = try fileSize(of: rolloutURL)
                 let context = try sessionContext(in: rolloutURL, size: size)
                 cursors[rolloutURL] = Cursor(
                     offset: size,
                     sessionID: context?.sessionID,
-                    role: context?.role ?? .root
+                    role: context?.role ?? .root,
+                    parentSessionID: context?.parentSessionID
                 )
+                if
+                    let context,
+                    context.role == .subagent,
+                    try isRecentlyActive(rolloutURL, observedAt: observedAt),
+                    try !hasTerminalEvent(in: rolloutURL, size: size)
+                {
+                    events.append(sessionStartedEvent(
+                        for: context,
+                        observedAt: observedAt
+                    ))
+                }
             }
             initialized = true
-            return []
+            return events
         }
 
         var events = removedEvents
         for rolloutURL in rolloutURLs {
             let size = try fileSize(of: rolloutURL)
-            var cursor = cursors[rolloutURL]
-                ?? Cursor(offset: 0, sessionID: nil, role: .root)
+            var cursor = cursors[rolloutURL] ?? .empty
             if cursor.offset > size {
-                cursor = Cursor(offset: 0, sessionID: nil, role: .root)
+                cursor = .empty
             }
             guard cursor.offset < size else {
                 cursors[rolloutURL] = cursor
@@ -104,8 +134,16 @@ public final class CodexRolloutMonitor {
 
             for line in lines {
                 if let context = sessionContext(from: line) {
+                    let isNewSession = cursor.sessionID != context.sessionID
                     cursor.sessionID = context.sessionID
                     cursor.role = context.role
+                    cursor.parentSessionID = context.parentSessionID
+                    if isNewSession, context.role == .subagent {
+                        events.append(sessionStartedEvent(
+                            for: context,
+                            observedAt: observedAt
+                        ))
+                    }
                     continue
                 }
                 guard let sessionID = cursor.sessionID else { continue }
@@ -113,6 +151,7 @@ public final class CodexRolloutMonitor {
                     line,
                     sessionID: sessionID,
                     role: cursor.role,
+                    parentSessionID: cursor.parentSessionID,
                     observedAt: observedAt
                 ) {
                     events.append(event)
@@ -121,7 +160,7 @@ public final class CodexRolloutMonitor {
             cursors[rolloutURL] = cursor
         }
 
-        return events.sorted { $0.timestamp < $1.timestamp }
+        return events
     }
 
     public func reset() {
@@ -175,7 +214,7 @@ public final class CodexRolloutMonitor {
     private func sessionContext(
         in url: URL,
         size: UInt64
-    ) throws -> (sessionID: String, role: AgentRole)? {
+    ) throws -> SessionContext? {
         let prefix = try read(
             url,
             offset: 0,
@@ -191,7 +230,7 @@ public final class CodexRolloutMonitor {
 
     private func sessionContext(
         from data: Data
-    ) -> (sessionID: String, role: AgentRole)? {
+    ) -> SessionContext? {
         guard
             let object = try? JSONSerialization.jsonObject(with: data),
             let record = object as? [String: Any],
@@ -202,9 +241,81 @@ public final class CodexRolloutMonitor {
         else {
             return nil
         }
-        let source = payload["source"] as? [String: Any]
-        let role: AgentRole = source?["subagent"] == nil ? .root : .subagent
-        return (sessionID, role)
+        let parentSessionID = verifiedParentSessionID(in: payload)
+        return SessionContext(
+            sessionID: sessionID,
+            role: parentSessionID == nil ? .root : .subagent,
+            parentSessionID: parentSessionID
+        )
+    }
+
+    private func verifiedParentSessionID(
+        in payload: [String: Any]
+    ) -> String? {
+        guard
+            let source = payload["source"] as? [String: Any],
+            let subagent = source["subagent"] as? [String: Any],
+            let threadSpawn = subagent["thread_spawn"] as? [String: Any],
+            let parentSessionID = threadSpawn["parent_thread_id"] as? String,
+            !parentSessionID.isEmpty,
+            parentSessionID == parentSessionID.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+        else {
+            return nil
+        }
+        return parentSessionID
+    }
+
+    private func sessionStartedEvent(
+        for context: SessionContext,
+        observedAt: Date
+    ) -> AgentEvent {
+        AgentEvent(
+            kind: .sessionStarted,
+            sessionID: context.sessionID,
+            parentSessionID: context.parentSessionID,
+            timestamp: observedAt,
+            role: .subagent,
+            attention: .none
+        )
+    }
+
+    private func isRecentlyActive(
+        _ url: URL,
+        observedAt: Date
+    ) throws -> Bool {
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        guard let modifiedAt = attributes[.modificationDate] as? Date else {
+            return false
+        }
+        let age = observedAt.timeIntervalSince(modifiedAt)
+        return age >= 0 && age < activeSessionInterval
+    }
+
+    private func hasTerminalEvent(
+        in url: URL,
+        size: UInt64
+    ) throws -> Bool {
+        let start = size > UInt64(maxBytesPerFile)
+            ? size - UInt64(maxBytesPerFile)
+            : 0
+        let tail = try read(url, offset: start, count: Int(size - start))
+        var lines = tail.split(separator: 0x0A).map { Data($0) }
+        if start > 0, !lines.isEmpty {
+            lines.removeFirst()
+        }
+        return lines.contains { line in
+            guard let event = AgentEventAdapter.normalizeRolloutLine(
+                line,
+                sessionID: "startup-inspection",
+                role: .root,
+                observedAt: .distantPast
+            ) else {
+                return false
+            }
+            return event.kind == .completed || event.kind == .aborted
+        }
     }
 
     private func completeLines(
