@@ -518,6 +518,31 @@ func verifiedSubagentEscalatesDueReminder() throws {
     #expect(escalated.records.isEmpty)
 }
 
+@Test("observation loss immediately returns a strong reminder to ordinary local fallback")
+func observationLossFailsBackToAmbient() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    let strong = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child-session",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "parent-session"
+    )))
+
+    let fallback = try engine.send(.agentObservationUnavailable)
+    let repeated = try engine.send(.agentObservationUnavailable)
+
+    #expect(strong.status == .dueStrong)
+    #expect(fallback.status == .dueAmbient)
+    #expect(fallback.reminderLevel == .ambient)
+    #expect(fallback.records.isEmpty)
+    #expect(fallback.cycle == strong.cycle)
+    #expect(repeated == fallback)
+}
+
 @Test("a Subagent that starts before hydration is due does not create or carry a reminder")
 func preDueSubagentDoesNotCreateReminder() throws {
     let setup = Date(timeIntervalSince1970: 1_800_000_000)

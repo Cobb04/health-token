@@ -1,5 +1,71 @@
 import Foundation
 
+public enum CodexObservationPolicy {
+    public static let presentationPollInterval: TimeInterval = 1
+}
+
+public struct CodexObservationLimits: Equatable, Sendable {
+    public let maxCandidateFiles: Int
+    public let maxScannedEntries: Int
+    public let maxCandidateAge: TimeInterval
+    public let maxBytesPerFile: Int
+    public let maxTotalBytesPerPoll: Int
+    public let maxSessionMetadataBytes: Int
+    public let maxRecordBytes: Int
+    public let maxPendingAttentionRequests: Int
+    public let startupRecoveryInterval: TimeInterval
+    public let activeSessionInterval: TimeInterval
+
+    public init(
+        maxCandidateFiles: Int = 8,
+        maxScannedEntries: Int = 512,
+        maxCandidateAge: TimeInterval = 10 * 60,
+        maxBytesPerFile: Int = 64 * 1024,
+        maxTotalBytesPerPoll: Int = 256 * 1024,
+        maxSessionMetadataBytes: Int = 8 * 1024,
+        maxRecordBytes: Int = 32 * 1024,
+        maxPendingAttentionRequests: Int = 32,
+        startupRecoveryInterval: TimeInterval = 2 * 60,
+        activeSessionInterval: TimeInterval = 5 * 60
+    ) {
+        precondition(maxCandidateFiles > 0)
+        precondition(maxScannedEntries > 0)
+        precondition(maxCandidateAge > 0)
+        precondition(maxBytesPerFile > 0)
+        precondition(maxTotalBytesPerPoll > 0)
+        precondition(maxSessionMetadataBytes > 0)
+        precondition(maxRecordBytes > 0)
+        precondition(maxPendingAttentionRequests > 0)
+        precondition(startupRecoveryInterval > 0)
+        precondition(activeSessionInterval > 0)
+        self.maxCandidateFiles = maxCandidateFiles
+        self.maxScannedEntries = maxScannedEntries
+        self.maxCandidateAge = maxCandidateAge
+        self.maxBytesPerFile = maxBytesPerFile
+        self.maxTotalBytesPerPoll = maxTotalBytesPerPoll
+        self.maxSessionMetadataBytes = maxSessionMetadataBytes
+        self.maxRecordBytes = maxRecordBytes
+        self.maxPendingAttentionRequests = maxPendingAttentionRequests
+        self.startupRecoveryInterval = startupRecoveryInterval
+        self.activeSessionInterval = activeSessionInterval
+    }
+}
+
+public struct CodexObservationMetrics: Equatable, Sendable {
+    public internal(set) var scannedEntries = 0
+    public internal(set) var candidateFiles = 0
+    public internal(set) var activeFiles = 0
+    public internal(set) var filesRead = 0
+    public internal(set) var bytesRead = 0
+    public internal(set) var maximumFileBytesRead = 0
+    public internal(set) var recordsParsed = 0
+    public internal(set) var discardedRecords = 0
+    public internal(set) var retainedRemainderBytes = 0
+    public internal(set) var pendingAttentionRequests = 0
+
+    public init() {}
+}
+
 public final class CodexRolloutMonitor {
     private struct SessionContext {
         let sessionID: String
@@ -9,15 +75,42 @@ public final class CodexRolloutMonitor {
 
     private struct AttentionCorrelation {
         private var pendingRequestIDs = Set<String>()
+        private var overflowed = false
         private var lastActivityAt: Date?
+
+        var pendingCount: Int {
+            overflowed ? 1 : pendingRequestIDs.count
+        }
 
         mutating func normalize(
             _ data: Data,
             sessionID: String,
             role: AgentRole,
             parentSessionID: String?,
-            observedAt: Date
+            observedAt: Date,
+            maxPendingRequests: Int
         ) -> AgentEvent? {
+            if overflowed {
+                var ignoredRequestIDs = Set<String>()
+                let event = AgentEventAdapter.normalizeRolloutLine(
+                    data,
+                    sessionID: sessionID,
+                    role: role,
+                    parentSessionID: parentSessionID,
+                    observedAt: observedAt,
+                    pendingAttentionRequestIDs: &ignoredRequestIDs
+                )
+                if event?.kind == .completed || event?.kind == .aborted {
+                    reset()
+                    return event
+                }
+                if event?.attention == .required {
+                    lastActivityAt = observedAt
+                    return event
+                }
+                return nil
+            }
+
             let previousRequestIDs = pendingRequestIDs
             let event = AgentEventAdapter.normalizeRolloutLine(
                 data,
@@ -27,19 +120,21 @@ public final class CodexRolloutMonitor {
                 observedAt: observedAt,
                 pendingAttentionRequestIDs: &pendingRequestIDs
             )
+            if pendingRequestIDs.count > maxPendingRequests {
+                pendingRequestIDs.removeAll(keepingCapacity: false)
+                overflowed = true
+                lastActivityAt = observedAt
+                return event
+            }
             if pendingRequestIDs != previousRequestIDs {
                 lastActivityAt = pendingRequestIDs.isEmpty ? nil : observedAt
             }
             return event
         }
 
-        mutating func expire(
-            at observedAt: Date,
-            after interval: TimeInterval
-        ) {
-            guard
-                let lastActivityAt,
-                observedAt.timeIntervalSince(lastActivityAt) >= interval
+        mutating func expire(at observedAt: Date, after interval: TimeInterval) {
+            guard let lastActivityAt,
+                  observedAt.timeIntervalSince(lastActivityAt) >= interval
             else {
                 return
             }
@@ -47,8 +142,24 @@ public final class CodexRolloutMonitor {
         }
 
         mutating func reset() {
-            pendingRequestIDs.removeAll()
+            pendingRequestIDs.removeAll(keepingCapacity: false)
+            overflowed = false
             lastActivityAt = nil
+        }
+
+        mutating func restore(
+            requestIDs: Set<String>,
+            lastActivityAt: Date,
+            maxPendingRequests: Int
+        ) {
+            if requestIDs.count > maxPendingRequests {
+                pendingRequestIDs.removeAll(keepingCapacity: false)
+                overflowed = true
+            } else {
+                pendingRequestIDs = requestIDs
+                overflowed = false
+            }
+            self.lastActivityAt = lastActivityAt
         }
     }
 
@@ -66,146 +177,343 @@ public final class CodexRolloutMonitor {
         var parentSessionID: String?
         var attentionCorrelation = AttentionCorrelation()
         var remainder = Data()
+        var lastRecordTimestamp: Date?
+    }
+
+    private struct PollReadState {
+        var metrics = CodexObservationMetrics()
+        var fileBytes: [URL: Int] = [:]
+        var filesRead = Set<URL>()
+
+        mutating func allowedCount(
+            requested: Int,
+            for url: URL,
+            limits: CodexObservationLimits
+        ) -> Int {
+            let fileRemaining = max(
+                0,
+                limits.maxBytesPerFile - (fileBytes[url] ?? 0)
+            )
+            let totalRemaining = max(
+                0,
+                limits.maxTotalBytesPerPoll - metrics.bytesRead
+            )
+            return min(max(0, requested), fileRemaining, totalRemaining)
+        }
+
+        mutating func recordRead(_ count: Int, from url: URL) {
+            guard count > 0 else { return }
+            filesRead.insert(url)
+            fileBytes[url, default: 0] += count
+            metrics.bytesRead += count
+            metrics.filesRead = filesRead.count
+            metrics.maximumFileBytesRead = max(
+                metrics.maximumFileBytesRead,
+                fileBytes[url] ?? 0
+            )
+        }
+    }
+
+    private struct StartupRecovery {
+        let requestIDs: Set<String>
+        let lastActivityAt: Date
     }
 
     public let sessionsURL: URL
+    public let limits: CodexObservationLimits
+    public private(set) var lastPollMetrics = CodexObservationMetrics()
 
     private let fileManager: FileManager
-    private let maxFiles: Int
-    private let maxScannedEntries: Int
-    private let maxBytesPerFile: Int
-    private let activeSessionInterval: TimeInterval
     private var cursors: [URL: Cursor] = [:]
     private var initialized = false
+    private var pollRotation = 0
 
     public init(
         sessionsURL: URL,
         fileManager: FileManager = .default,
-        maxFiles: Int = 8,
-        maxScannedEntries: Int = 512,
-        maxBytesPerFile: Int = 64 * 1024,
-        activeSessionInterval: TimeInterval = 5 * 60
+        limits: CodexObservationLimits = CodexObservationLimits()
     ) {
         self.sessionsURL = sessionsURL
         self.fileManager = fileManager
-        self.maxFiles = maxFiles
-        self.maxScannedEntries = maxScannedEntries
-        self.maxBytesPerFile = maxBytesPerFile
-        self.activeSessionInterval = activeSessionInterval
+        self.limits = limits
+    }
+
+    public convenience init(
+        sessionsURL: URL,
+        fileManager: FileManager = .default,
+        maxBytesPerFile: Int
+    ) {
+        self.init(
+            sessionsURL: sessionsURL,
+            fileManager: fileManager,
+            limits: CodexObservationLimits(
+                maxBytesPerFile: maxBytesPerFile,
+                maxRecordBytes: maxBytesPerFile
+            )
+        )
     }
 
     public func poll(observedAt: Date) throws -> [AgentEvent] {
-        let rolloutURLs = try recentRolloutURLs()
-        let activeURLs = Set(rolloutURLs)
-        var removedSessionIDs = Set<String>()
-        let removedEvents = cursors.compactMap { url, cursor -> AgentEvent? in
-            guard
-                initialized,
-                !fileManager.fileExists(atPath: url.path),
-                let sessionID = cursor.sessionID,
-                removedSessionIDs.insert(sessionID).inserted
-            else {
-                return nil
-            }
-            return AgentEvent(
-                kind: .sessionRemoved,
-                sessionID: sessionID,
-                parentSessionID: cursor.parentSessionID,
-                timestamp: observedAt,
-                role: cursor.role,
-                attention: .none
+        var readState = PollReadState()
+        let rolloutURLs = try recentRolloutURLs(
+            observedAt: observedAt,
+            readState: &readState
+        )
+        readState.metrics.activeFiles = rolloutURLs.count
+
+        let events: [AgentEvent]
+        if initialized {
+            events = try pollSteadyState(
+                rolloutURLs: rolloutURLs,
+                observedAt: observedAt,
+                readState: &readState
             )
+        } else {
+            events = try pollStartup(
+                rolloutURLs: rolloutURLs,
+                observedAt: observedAt,
+                readState: &readState
+            )
+            initialized = true
+        }
+
+        readState.metrics.retainedRemainderBytes = cursors.values.reduce(0) {
+            $0 + $1.remainder.count
+        }
+        readState.metrics.pendingAttentionRequests = cursors.values.reduce(0) {
+            $0 + $1.attentionCorrelation.pendingCount
+        }
+        lastPollMetrics = readState.metrics
+        return events
+    }
+
+    public func reset() {
+        cursors.removeAll()
+        initialized = false
+        pollRotation = 0
+        lastPollMetrics = CodexObservationMetrics()
+    }
+
+    private func pollStartup(
+        rolloutURLs: [URL],
+        observedAt: Date,
+        readState: inout PollReadState
+    ) throws -> [AgentEvent] {
+        var events: [AgentEvent] = []
+        for rolloutURL in rolloutURLs {
+            let size = try fileSize(of: rolloutURL)
+            let context = try sessionContext(
+                in: rolloutURL,
+                size: size,
+                readState: &readState
+            )
+            var cursor = Cursor(
+                offset: size,
+                sessionID: context?.sessionID,
+                role: context?.role ?? .root,
+                parentSessionID: context?.parentSessionID
+            )
+            if let context,
+               context.role == .root,
+               let recovered = try recoverAttention(
+                   in: rolloutURL,
+                   size: size,
+                   context: context,
+                   observedAt: observedAt,
+                   readState: &readState
+               ) {
+                cursor.attentionCorrelation.restore(
+                    requestIDs: recovered.requestIDs,
+                    lastActivityAt: recovered.lastActivityAt,
+                    maxPendingRequests: limits.maxPendingAttentionRequests
+                )
+                events.append(AgentEvent(
+                    kind: .attentionChanged,
+                    sessionID: context.sessionID,
+                    timestamp: observedAt,
+                    role: .root,
+                    attention: .required,
+                    toolClassification: .userInput
+                ))
+            }
+            cursors[rolloutURL] = cursor
+        }
+        return events
+    }
+
+    private func pollSteadyState(
+        rolloutURLs: [URL],
+        observedAt: Date,
+        readState: inout PollReadState
+    ) throws -> [AgentEvent] {
+        let activeURLs = Set(rolloutURLs)
+        var events: [AgentEvent] = []
+        var removedSessionIDs = Set<String>()
+        for (url, cursor) in cursors where !activeURLs.contains(url) {
+            if let sessionID = cursor.sessionID,
+               removedSessionIDs.insert(sessionID).inserted {
+                events.append(sessionRemovedEvent(from: cursor, observedAt: observedAt))
+            }
         }
         cursors = cursors.filter { activeURLs.contains($0.key) }
 
-        if !initialized {
-            var events: [AgentEvent] = []
-            for rolloutURL in rolloutURLs {
-                let size = try fileSize(of: rolloutURL)
-                let context = try sessionContext(in: rolloutURL, size: size)
-                cursors[rolloutURL] = Cursor(
-                    offset: size,
-                    sessionID: context?.sessionID,
-                    role: context?.role ?? .root,
-                    parentSessionID: context?.parentSessionID
-                )
-                if
-                    let context,
-                    context.role == .subagent,
-                    try isRecentlyActive(rolloutURL, observedAt: observedAt),
-                    try !hasTerminalEvent(in: rolloutURL, size: size)
-                {
-                    events.append(sessionStartedEvent(
-                        for: context,
-                        observedAt: observedAt
-                    ))
-                }
-            }
-            initialized = true
-            return events
+        let orderedURLs = rotated(rolloutURLs)
+        if !rolloutURLs.isEmpty {
+            pollRotation = (pollRotation + 1) % rolloutURLs.count
         }
 
-        var events = removedEvents
-        for rolloutURL in rolloutURLs {
+        for rolloutURL in orderedURLs {
             let size = try fileSize(of: rolloutURL)
             var cursor = cursors[rolloutURL] ?? .empty
             if cursor.offset > size {
-                cursor = .empty
-            }
-            cursor.attentionCorrelation.expire(
-                at: observedAt,
-                after: activeSessionInterval
-            )
-            guard cursor.offset < size else {
+                if cursor.sessionID != nil {
+                    events.append(sessionRemovedEvent(from: cursor, observedAt: observedAt))
+                }
+                cursor = Cursor(
+                    offset: size,
+                    sessionID: nil,
+                    role: .root,
+                    parentSessionID: nil
+                )
                 cursors[rolloutURL] = cursor
                 continue
             }
 
-            var start = cursor.offset
-            if size - start > UInt64(maxBytesPerFile) {
-                start = size - UInt64(maxBytesPerFile)
-                cursor.remainder = Data()
+            cursor.attentionCorrelation.expire(
+                at: observedAt,
+                after: limits.activeSessionInterval
+            )
+            let available = size - cursor.offset
+            guard available > 0 else {
+                cursors[rolloutURL] = cursor
+                continue
+            }
+
+            if available > UInt64(limits.maxBytesPerFile) {
+                readState.metrics.discardedRecords += 1
+                failClosed(
+                    cursor: &cursor,
+                    newOffset: size,
+                    observedAt: observedAt,
+                    events: &events
+                )
+                cursors[rolloutURL] = cursor
+                continue
+            }
+
+            let requested = Int(available)
+            if requested > limits.maxTotalBytesPerPoll {
+                readState.metrics.discardedRecords += 1
+                failClosed(
+                    cursor: &cursor,
+                    newOffset: size,
+                    observedAt: observedAt,
+                    events: &events
+                )
+                cursors[rolloutURL] = cursor
+                continue
+            }
+            guard readState.allowedCount(
+                requested: requested,
+                for: rolloutURL,
+                limits: limits
+            ) == requested else {
+                cursors[rolloutURL] = cursor
+                continue
             }
             let chunk = try read(
                 rolloutURL,
-                offset: start,
-                count: Int(size - start)
+                offset: cursor.offset,
+                requestedCount: requested,
+                readState: &readState
             )
-            let skippedPrefix = start > cursor.offset
-            cursor.offset = size
-
-            var lines = completeLines(
-                in: chunk,
-                remainder: &cursor.remainder
-            )
-            if skippedPrefix, !lines.isEmpty {
-                lines.removeFirst()
+            guard !chunk.isEmpty else {
+                cursors[rolloutURL] = cursor
+                continue
+            }
+            cursor.offset += UInt64(chunk.count)
+            let parsed = completeLines(in: chunk, remainder: &cursor.remainder)
+            readState.metrics.discardedRecords += parsed.discardedRecords
+            if parsed.discardedRecords > 0 {
+                failClosed(
+                    cursor: &cursor,
+                    newOffset: cursor.offset,
+                    observedAt: observedAt,
+                    events: &events
+                )
+                cursors[rolloutURL] = cursor
+                continue
+            }
+            let malformedRecordCount = parsed.lines.filter {
+                !isStructurallyValidRecord($0)
+            }.count
+            if malformedRecordCount > 0 {
+                readState.metrics.discardedRecords += malformedRecordCount
+                failClosed(
+                    cursor: &cursor,
+                    newOffset: cursor.offset,
+                    observedAt: observedAt,
+                    events: &events
+                )
+                cursors[rolloutURL] = cursor
+                continue
             }
 
-            for line in lines {
+            for line in parsed.lines {
+                readState.metrics.recordsParsed += 1
                 if let context = sessionContext(from: line) {
-                    let isNewSession = cursor.sessionID != context.sessionID
+                    let timestamp = recordTimestamp(from: line)
+                    let isOrdered = timestamp.map { timestamp in
+                        cursor.lastRecordTimestamp.map { lastTimestamp in
+                            lastTimestamp <= timestamp
+                        } ?? true
+                    } ?? false
+                    let isRecent = timestamp.map {
+                        let age = observedAt.timeIntervalSince($0)
+                        return age >= 0 && age <= limits.activeSessionInterval
+                    } ?? false
+                    let canStartSubagent = !parsed.hasPartialRecord
+                        && context.role == .subagent
+                        && isOrdered
+                        && isRecent
+                    let effectiveContext = canStartSubagent
+                        ? context
+                        : SessionContext(
+                            sessionID: context.sessionID,
+                            role: .root,
+                            parentSessionID: nil
+                        )
+                    let isNewSession = cursor.sessionID != effectiveContext.sessionID
                     if isNewSession {
                         cursor.attentionCorrelation.reset()
                     }
-                    cursor.sessionID = context.sessionID
-                    cursor.role = context.role
-                    cursor.parentSessionID = context.parentSessionID
-                    if isNewSession, context.role == .subagent {
+                    cursor.sessionID = effectiveContext.sessionID
+                    cursor.role = effectiveContext.role
+                    cursor.parentSessionID = effectiveContext.parentSessionID
+                    if let timestamp, isOrdered {
+                        cursor.lastRecordTimestamp = timestamp
+                    }
+                    if isNewSession, canStartSubagent {
                         events.append(sessionStartedEvent(
-                            for: context,
+                            for: effectiveContext,
                             observedAt: observedAt
                         ))
                     }
                     continue
                 }
+
                 guard let sessionID = cursor.sessionID else { continue }
+                if hasInvalidCorrelationID(in: line) {
+                    readState.metrics.discardedRecords += 1
+                    continue
+                }
                 if let event = cursor.attentionCorrelation.normalize(
                     line,
                     sessionID: sessionID,
                     role: cursor.role,
                     parentSessionID: cursor.parentSessionID,
-                    observedAt: observedAt
+                    observedAt: observedAt,
+                    maxPendingRequests: limits.maxPendingAttentionRequests
                 ) {
                     events.append(event)
                 }
@@ -216,18 +524,19 @@ public final class CodexRolloutMonitor {
         return events
     }
 
-    public func reset() {
-        cursors.removeAll()
-        initialized = false
-    }
-
-    private func recentRolloutURLs() throws -> [URL] {
+    private func recentRolloutURLs(
+        observedAt: Date,
+        readState: inout PollReadState
+    ) throws -> [URL] {
         guard fileManager.fileExists(atPath: sessionsURL.path) else { return [] }
 
         var candidates: [(url: URL, modifiedAt: Date)] = []
-        var scannedEntries = 0
         func scan(_ directory: URL, depth: Int) throws {
-            guard scannedEntries < maxScannedEntries, depth <= 6 else { return }
+            guard readState.metrics.scannedEntries < limits.maxScannedEntries,
+                  depth <= 6
+            else {
+                return
+            }
             let entries = try fileManager.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [
@@ -238,42 +547,57 @@ public final class CodexRolloutMonitor {
             ).sorted { $0.lastPathComponent > $1.lastPathComponent }
 
             for url in entries {
-                guard scannedEntries < maxScannedEntries else { return }
-                scannedEntries += 1
+                guard readState.metrics.scannedEntries < limits.maxScannedEntries else {
+                    return
+                }
+                readState.metrics.scannedEntries += 1
                 let values = try url.resourceValues(
                     forKeys: [.isDirectoryKey, .contentModificationDateKey]
                 )
                 if values.isDirectory == true {
                     try scan(url, depth: depth + 1)
-                } else if
-                    url.pathExtension == "jsonl",
-                    url.lastPathComponent.hasPrefix("rollout-")
-                {
-                    candidates.append((
-                        url,
-                        values.contentModificationDate ?? .distantPast
-                    ))
+                } else if url.pathExtension == "jsonl",
+                          url.lastPathComponent.hasPrefix("rollout-"),
+                          let modifiedAt = values.contentModificationDate {
+                    let age = observedAt.timeIntervalSince(modifiedAt)
+                    if age >= 0 && age <= limits.maxCandidateAge {
+                        candidates.append((url, modifiedAt))
+                    }
                 }
             }
         }
         try scan(sessionsURL, depth: 0)
 
-        return candidates
-            .sorted { $0.modifiedAt > $1.modifiedAt }
-            .prefix(maxFiles)
+        let urls = candidates
+            .sorted {
+                if $0.modifiedAt == $1.modifiedAt {
+                    return $0.url.path > $1.url.path
+                }
+                return $0.modifiedAt > $1.modifiedAt
+            }
+            .prefix(limits.maxCandidateFiles)
             .map(\.url)
+        readState.metrics.candidateFiles = urls.count
+        return urls
     }
 
     private func sessionContext(
         in url: URL,
-        size: UInt64
+        size: UInt64,
+        readState: inout PollReadState
     ) throws -> SessionContext? {
+        let requested = min(
+            Int(min(size, UInt64(Int.max))),
+            limits.maxSessionMetadataBytes
+        )
         let prefix = try read(
             url,
             offset: 0,
-            count: min(Int(size), maxBytesPerFile)
+            requestedCount: requested,
+            readState: &readState
         )
         for line in prefix.split(separator: 0x0A) {
+            guard line.count <= limits.maxRecordBytes else { return nil }
             if let context = sessionContext(from: Data(line)) {
                 return context
             }
@@ -281,16 +605,14 @@ public final class CodexRolloutMonitor {
         return nil
     }
 
-    private func sessionContext(
-        from data: Data
-    ) -> SessionContext? {
-        guard
-            let object = try? JSONSerialization.jsonObject(with: data),
-            let record = object as? [String: Any],
-            record["type"] as? String == "session_meta",
-            let payload = record["payload"] as? [String: Any],
-            let sessionID = payload["id"] as? String,
-            !sessionID.isEmpty
+    private func sessionContext(from data: Data) -> SessionContext? {
+        guard data.count <= limits.maxRecordBytes,
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let record = object as? [String: Any],
+              record["type"] as? String == "session_meta",
+              let payload = record["payload"] as? [String: Any],
+              let sessionID = payload["id"] as? String,
+              isValidOpaqueID(sessionID)
         else {
             return nil
         }
@@ -302,22 +624,22 @@ public final class CodexRolloutMonitor {
         )
     }
 
-    private func verifiedParentSessionID(
-        in payload: [String: Any]
-    ) -> String? {
-        guard
-            let source = payload["source"] as? [String: Any],
-            let subagent = source["subagent"] as? [String: Any],
-            let threadSpawn = subagent["thread_spawn"] as? [String: Any],
-            let parentSessionID = threadSpawn["parent_thread_id"] as? String,
-            !parentSessionID.isEmpty,
-            parentSessionID == parentSessionID.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
+    private func verifiedParentSessionID(in payload: [String: Any]) -> String? {
+        guard let source = payload["source"] as? [String: Any],
+              let subagent = source["subagent"] as? [String: Any],
+              let threadSpawn = subagent["thread_spawn"] as? [String: Any],
+              let parentSessionID = threadSpawn["parent_thread_id"] as? String,
+              isValidOpaqueID(parentSessionID)
         else {
             return nil
         }
         return parentSessionID
+    }
+
+    private func isValidOpaqueID(_ value: String) -> Bool {
+        !value.isEmpty
+            && value.utf8.count <= 128
+            && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func sessionStartedEvent(
@@ -334,60 +656,228 @@ public final class CodexRolloutMonitor {
         )
     }
 
-    private func isRecentlyActive(
-        _ url: URL,
+    private func sessionRemovedEvent(
+        from cursor: Cursor,
         observedAt: Date
-    ) throws -> Bool {
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        guard let modifiedAt = attributes[.modificationDate] as? Date else {
-            return false
-        }
-        let age = observedAt.timeIntervalSince(modifiedAt)
-        return age >= 0 && age < activeSessionInterval
+    ) -> AgentEvent {
+        AgentEvent(
+            kind: .sessionRemoved,
+            sessionID: cursor.sessionID ?? "unavailable-session",
+            parentSessionID: cursor.parentSessionID,
+            timestamp: observedAt,
+            role: cursor.role,
+            attention: .none
+        )
     }
 
-    private func hasTerminalEvent(
+    private func recoverAttention(
         in url: URL,
-        size: UInt64
-    ) throws -> Bool {
-        let start = size > UInt64(maxBytesPerFile)
-            ? size - UInt64(maxBytesPerFile)
-            : 0
-        let tail = try read(url, offset: start, count: Int(size - start))
+        size: UInt64,
+        context: SessionContext,
+        observedAt: Date,
+        readState: inout PollReadState
+    ) throws -> StartupRecovery? {
+        let alreadyRead = readState.fileBytes[url] ?? 0
+        let fileRemaining = max(0, limits.maxBytesPerFile - alreadyRead)
+        guard fileRemaining > 0 else { return nil }
+        let requested = min(Int(min(size, UInt64(Int.max))), fileRemaining)
+        let start = size > UInt64(requested) ? size - UInt64(requested) : 0
+        let tail = try read(
+            url,
+            offset: start,
+            requestedCount: requested,
+            readState: &readState
+        )
+        guard tail.last == 0x0A || tail.isEmpty else { return nil }
         var lines = tail.split(separator: 0x0A).map { Data($0) }
         if start > 0, !lines.isEmpty {
             lines.removeFirst()
         }
-        return lines.contains { line in
-            guard let event = AgentEventAdapter.normalizeRolloutLine(
-                line,
-                sessionID: "startup-inspection",
-                role: .root,
-                observedAt: .distantPast
-            ) else {
-                return false
+        var pendingRequestIDs = Set<String>()
+        var requestTimestamps: [String: Date] = [:]
+        var lastRelevantTimestamp: Date?
+
+        for line in lines {
+            guard line.count <= limits.maxRecordBytes,
+                  let object = try? JSONSerialization.jsonObject(with: line),
+                  let record = object as? [String: Any],
+                  let recordType = record["type"] as? String,
+                  let payload = record["payload"] as? [String: Any],
+                  !hasInvalidCorrelationID(recordType: recordType, payload: payload)
+            else {
+                readState.metrics.discardedRecords += 1
+                return nil
             }
-            return event.kind == .completed || event.kind == .aborted
+            readState.metrics.recordsParsed += 1
+
+            var nextPendingRequestIDs = pendingRequestIDs
+            let event = AgentEventAdapter.normalizeRolloutLine(
+                line,
+                sessionID: context.sessionID,
+                role: .root,
+                observedAt: observedAt,
+                pendingAttentionRequestIDs: &nextPendingRequestIDs
+            )
+            guard event != nil || nextPendingRequestIDs != pendingRequestIDs else {
+                continue
+            }
+            guard let timestamp = recordTimestamp(in: record),
+                  timestamp <= observedAt,
+                  lastRelevantTimestamp.map({ timestamp >= $0 }) ?? true
+            else {
+                readState.metrics.discardedRecords += 1
+                return nil
+            }
+            lastRelevantTimestamp = timestamp
+            pendingRequestIDs = nextPendingRequestIDs
+
+            if event?.kind == .attentionChanged,
+               event?.attention == .required,
+               recordType == "event_msg",
+               let callID = payload["call_id"] as? String {
+                requestTimestamps[callID] = timestamp
+            } else if event?.kind == .completed || event?.kind == .aborted {
+                requestTimestamps.removeAll()
+            } else {
+                requestTimestamps = requestTimestamps.filter {
+                    pendingRequestIDs.contains($0.key)
+                }
+            }
         }
+
+        let cutoff = observedAt.addingTimeInterval(-limits.startupRecoveryInterval)
+        let recentRequestIDs = pendingRequestIDs.filter {
+            guard let timestamp = requestTimestamps[$0] else { return false }
+            return timestamp >= cutoff && timestamp <= observedAt
+        }
+        guard !recentRequestIDs.isEmpty else { return nil }
+        let lastActivityAt = recentRequestIDs.compactMap {
+            requestTimestamps[$0]
+        }.max() ?? observedAt
+        return StartupRecovery(
+            requestIDs: recentRequestIDs,
+            lastActivityAt: lastActivityAt
+        )
+    }
+
+    private func recordTimestamp(from data: Data) -> Date? {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let record = object as? [String: Any]
+        else {
+            return nil
+        }
+        return recordTimestamp(in: record)
+    }
+
+    private func recordTimestamp(in record: [String: Any]) -> Date? {
+        guard let rawTimestamp = record["timestamp"] as? String else {
+            return nil
+        }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: rawTimestamp)
+            ?? ISO8601DateFormatter().date(from: rawTimestamp)
+    }
+
+    private func hasInvalidCorrelationID(in data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let record = object as? [String: Any],
+              let recordType = record["type"] as? String,
+              let payload = record["payload"] as? [String: Any]
+        else {
+            return false
+        }
+        return hasInvalidCorrelationID(recordType: recordType, payload: payload)
+    }
+
+    private func isStructurallyValidRecord(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let record = object as? [String: Any],
+              record["type"] is String,
+              record["payload"] is [String: Any]
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func hasInvalidCorrelationID(
+        recordType: String,
+        payload: [String: Any]
+    ) -> Bool {
+        let eventType = payload["type"] as? String
+        let requiresCorrelationID = recordType == "response_item"
+            && eventType == "function_call_output"
+            || recordType == "event_msg"
+            && [
+                "request_user_input",
+                "exec_approval_request",
+                "apply_patch_approval_request",
+                "request_permissions",
+                "exec_command_begin",
+                "patch_apply_begin",
+                "mcp_tool_call_begin"
+            ].contains(eventType)
+        guard requiresCorrelationID else { return false }
+        guard let callID = payload["call_id"] as? String else { return true }
+        return !isValidOpaqueID(callID)
     }
 
     private func completeLines(
         in chunk: Data,
         remainder: inout Data
-    ) -> [Data] {
+    ) -> (
+        lines: [Data],
+        discardedRecords: Int,
+        hasPartialRecord: Bool
+    ) {
         var combined = remainder
         combined.append(chunk)
         var pieces = combined.split(
             separator: 0x0A,
             omittingEmptySubsequences: false
         )
+        let incomplete: Data?
         if combined.last == 0x0A {
-            remainder = Data()
+            incomplete = nil
             pieces.removeLast()
         } else {
-            remainder = pieces.isEmpty ? Data() : Data(pieces.removeLast())
+            incomplete = pieces.isEmpty ? Data() : Data(pieces.removeLast())
         }
-        return pieces.filter { !$0.isEmpty }.map { Data($0) }
+
+        var discardedRecords = 0
+        var lines: [Data] = []
+        for piece in pieces where !piece.isEmpty {
+            if piece.count > limits.maxRecordBytes {
+                discardedRecords += 1
+            } else {
+                lines.append(Data(piece))
+            }
+        }
+        if let incomplete, incomplete.count > limits.maxRecordBytes {
+            remainder = Data()
+            discardedRecords += 1
+        } else {
+            remainder = incomplete ?? Data()
+        }
+        return (lines, discardedRecords, !remainder.isEmpty)
+    }
+
+    private func failClosed(
+        cursor: inout Cursor,
+        newOffset: UInt64,
+        observedAt: Date,
+        events: inout [AgentEvent]
+    ) {
+        if cursor.sessionID != nil {
+            events.append(sessionRemovedEvent(from: cursor, observedAt: observedAt))
+        }
+        cursor = Cursor(
+            offset: newOffset,
+            sessionID: nil,
+            role: .root,
+            parentSessionID: nil
+        )
     }
 
     private func fileSize(of url: URL) throws -> UInt64 {
@@ -395,10 +885,29 @@ public final class CodexRolloutMonitor {
         return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
     }
 
-    private func read(_ url: URL, offset: UInt64, count: Int) throws -> Data {
+    private func read(
+        _ url: URL,
+        offset: UInt64,
+        requestedCount: Int,
+        readState: inout PollReadState
+    ) throws -> Data {
+        let count = readState.allowedCount(
+            requested: requestedCount,
+            for: url,
+            limits: limits
+        )
+        guard count > 0 else { return Data() }
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         try handle.seek(toOffset: offset)
-        return try handle.read(upToCount: count) ?? Data()
+        let data = try handle.read(upToCount: count) ?? Data()
+        readState.recordRead(data.count, from: url)
+        return data
+    }
+
+    private func rotated(_ urls: [URL]) -> [URL] {
+        guard !urls.isEmpty else { return [] }
+        let index = pollRotation % urls.count
+        return Array(urls[index...]) + Array(urls[..<index])
     }
 }

@@ -60,14 +60,27 @@ The menu bar reports:
 - **Unavailable** when no supported local Codex installation is detected.
 
 The adapter follows the public [Codex hooks
-contract](https://developers.openai.com/codex/hooks). A bounded incremental
-tail of recent local rollout files supplies verified Subagent metadata and
-terminal lifecycle evidence used for recovery and fallback. New local
-`request_user_input` and approval records are correlated to their matching
-tool output or execution start using request IDs kept only in memory. Startup
-restores only recently modified verified Subagents whose bounded tail has no
-completion or abort, then begins at each file tail so completed history is not
-replayed.
+contract](https://developers.openai.com/codex/hooks). Rollout discovery visits
+at most 512 directory entries (to depth six), considers at most eight rollout
+files modified during the previous ten minutes, and never scans the complete
+Codex history. Every poll may read at most 64 KiB from one file and 256 KiB in
+total, including an 8 KiB-per-file session-metadata prefix. One JSONL record
+and each retained partial record are capped at 32 KiB. Parser state is limited
+to the eight active files and 32 opaque attention request IDs per file; opaque
+IDs are capped at 128 UTF-8 bytes.
+
+At startup, the bounded prefix/tail inspection emits no prompt, tool, or
+Subagent lifecycle event. It may restore one root attention-required state
+only when complete, monotonically timestamped records prove that a
+`request_user_input` or approval created during the previous two minutes has
+no matching output/execution start and no later completion or abort. Only the
+opaque request ID remains in memory so a subsequent resolution can clear the
+state; question text, options, commands, output, and unknown fields are never
+retained in normalized events or persistence. Malformed, partial, oversized,
+unknown, stale, future-dated, or out-of-order evidence cannot create a strong
+reminder. After startup, per-file cursors read only appended bytes; unchanged
+files are not reparsed, partial-record memory stays bounded, and files leaving
+the active candidate set lose their Agent signal.
 Inputs normalize to `AgentEvent` values with these kinds:
 `sessionStarted`, `promptSubmitted`, `planUpdated`, `toolUsed`,
 `attentionChanged`, `completed`, `aborted`, and `sessionRemoved`. Every event
@@ -84,6 +97,13 @@ back to the persistent water drop without recording a drink or clearing the
 hydration cycle. Attention-required state is aggregated across root sessions,
 expires with the same lifecycle cleanup, and always outranks every tool-streak
 or Subagent signal.
+
+The app polls the bounded observer once per second, keeping a qualifying append
+within the two-second presentation budget under the representative synthetic
+load in the test suite. If Codex is missing, observation is disabled, rollout
+reading fails, or the configured hooks stop delivering events, the existing
+menu-bar status reports fallback-only or unavailable. The clock-driven local
+hydration loop continues and does not post repeated failure notifications.
 
 Prompt bodies, source code, tool arguments, assistant output, transcript paths,
 working directories, model names, and unknown upstream fields are discarded

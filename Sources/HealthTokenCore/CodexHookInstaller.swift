@@ -79,10 +79,11 @@ public final class CodexHookInstaller {
 
     public func health(
         command: String,
-        recentlyObservedEvent: Bool = false
+        recentlyObservedEvent: Bool = false,
+        observationFailed: Bool = false
     ) -> CodexIntegrationHealth {
         let installed = isInstalled(command: command)
-        if installed && recentlyObservedEvent {
+        if installed && recentlyObservedEvent && !observationFailed {
             return .connected
         }
 

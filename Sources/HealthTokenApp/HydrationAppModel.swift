@@ -68,7 +68,8 @@ final class HydrationAppModel: ObservableObject {
             isCodexObservationEnabled = hookInstaller.isInstalled(
                 command: hookCommand
             )
-            let hookEvents = try eventInbox.drain()
+            let drainedHookEvents = try eventInbox.drain()
+            let hookEvents = isCodexObservationEnabled ? drainedHookEvents : []
             if !hookEvents.isEmpty {
                 lastHookEventObservedAt = Date()
             }
@@ -87,9 +88,13 @@ final class HydrationAppModel: ObservableObject {
             for event in events {
                 snapshot = try engine.send(.agentEvent(event))
             }
+            if !isCodexObservationEnabled {
+                snapshot = try engine.send(.agentObservationUnavailable)
+            }
             inboxError = nil
         } catch {
             inboxError = "Codex 事件暂时无法读取；饮水提醒保持低干扰兜底。"
+            snapshot = (try? engine.send(.agentObservationUnavailable)) ?? snapshot
         }
         updateIntegrationError()
         send(.timeAdvanced)
@@ -144,6 +149,9 @@ final class HydrationAppModel: ObservableObject {
         isCodexObservationEnabled = hookInstaller.isInstalled(
             command: hookCommand
         )
+        if !isCodexObservationEnabled {
+            snapshot = (try? engine.send(.agentObservationUnavailable)) ?? snapshot
+        }
         integrationHealth = currentIntegrationHealth
         updateIntegrationError()
     }
@@ -192,7 +200,8 @@ final class HydrationAppModel: ObservableObject {
         } ?? false
         return hookInstaller.health(
             command: hookCommand,
-            recentlyObservedEvent: recentlyObservedEvent
+            recentlyObservedEvent: recentlyObservedEvent,
+            observationFailed: inboxError != nil
         )
     }
 
