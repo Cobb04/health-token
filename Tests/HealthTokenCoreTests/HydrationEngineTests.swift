@@ -1162,6 +1162,54 @@ func sameSessionActivityDoesNotResolveAttention() throws {
     #expect(resolved.reminderLevel == .ambient)
 }
 
+@Test("a completed question hook cannot clear another pending request")
+func mixedHookAttentionWaitsForCorrelatedResolution() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    let hookPayloads = [
+        #"{"hook_event_name":"PermissionRequest","session_id":"interactive-root","tool_name":"Bash","tool_input":{"command":"synthetic private command"}}"#,
+        #"{"hook_event_name":"PreToolUse","session_id":"interactive-root","tool_name":"request_user_input","tool_input":{"questions":["synthetic private question"]}}"#,
+        #"{"hook_event_name":"PostToolUse","session_id":"interactive-root","tool_name":"request_user_input","tool_response":{"answers":["synthetic private answer"]}}"#
+    ]
+    for payload in hookPayloads {
+        let event = try #require(AgentEventAdapter.normalizeHook(
+            Data(payload.utf8),
+            observedAt: clock.now
+        ))
+        _ = try engine.send(.agentEvent(event))
+    }
+
+    var whilePermissionPending = engine.snapshot
+    for _ in 0..<3 {
+        whilePermissionPending = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "other-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    #expect(whilePermissionPending.reminderLevel == .ambient)
+
+    _ = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    for expectedLevel in [ReminderLevel.ambient, .ambient, .strong] {
+        let fresh = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "other-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+        #expect(fresh.reminderLevel == expectedLevel)
+    }
+}
+
 private func agentEvent(
     _ kind: AgentEvent.Kind,
     sessionID: String,

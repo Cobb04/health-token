@@ -80,28 +80,31 @@ func lifecycleHooksNormalize() throws {
 @Test("permission and user-input hooks report attention without answering")
 func attentionHooksNormalizeReadOnly() throws {
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
-    let fixtures: [(String, AgentAttention)] = [
+    let fixtures: [(String, AgentEvent.Kind, AgentAttention)] = [
         (
             #"{"hook_event_name":"PermissionRequest","session_id":"root","tool_name":"Bash","tool_input":{"command":"private command"}}"#,
+            .attentionChanged,
             .required
         ),
         (
             #"{"hook_event_name":"PreToolUse","session_id":"root","tool_name":"request_user_input","tool_input":{"questions":["private question"]}}"#,
+            .attentionChanged,
             .required
         ),
         (
             #"{"hook_event_name":"PostToolUse","session_id":"root","tool_name":"request_user_input","tool_response":{"answers":["private answer"]}}"#,
+            .toolUsed,
             .none
         )
     ]
 
-    for (fixture, expectedAttention) in fixtures {
+    for (fixture, expectedKind, expectedAttention) in fixtures {
         let data = try #require(fixture.data(using: .utf8))
         let event = try #require(
             AgentEventAdapter.normalizeHook(data, observedAt: observedAt)
         )
 
-        #expect(event.kind == .attentionChanged)
+        #expect(event.kind == expectedKind)
         #expect(event.attention == expectedAttention)
         #expect(event.toolClassification == .userInput)
     }

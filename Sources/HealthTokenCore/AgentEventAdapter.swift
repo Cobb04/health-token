@@ -57,7 +57,7 @@ public enum AgentEventAdapter {
             if isMetadataTool(toolName) {
                 return nil
             } else if isUserInputTool(toolName) {
-                kind = .attentionChanged
+                kind = .toolUsed
                 toolClassification = .userInput
             } else if toolName == "update_plan" || toolName.hasSuffix("__update_plan") {
                 kind = .planUpdated
