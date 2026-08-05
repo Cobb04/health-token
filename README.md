@@ -13,7 +13,12 @@ classified only from explicit upstream signals: `SubagentStart` hooks or
 `source.subagent.thread_spawn` rollout metadata. They are never inferred from
 working directory, timing, process count, nickname, or activity volume. The
 character records through the same deliberate sip action as the ambient
-reminder.
+reminder. If any interactive root session requests permission or calls
+`request_user_input`, the character immediately collapses to the non-activating
+water drop across all sessions. The due cycle, snooze, estimated total, and
+Drink Records remain unchanged. Resolving the request does not replay an older
+tool streak or Subagent start; a new qualifying autonomous-work signal is
+required before the character can return.
 
 Every displayed volume is an approximation. Health Token does not show a
 medical hydration target or claim to measure actual intake.
@@ -73,7 +78,9 @@ session activity; user input also resets a qualifying tool streak.
 Plan updates and metadata, telemetry, or Health Token integration operations do
 not contribute to a streak. Completion or expiry collapses the pixel reminder
 back to the persistent water drop without recording a drink or clearing the
-hydration cycle.
+hydration cycle. Attention-required state is aggregated across root sessions,
+expires with the same lifecycle cleanup, and always outranks every tool-streak
+or Subagent signal.
 
 Prompt bodies, source code, tool arguments, assistant output, transcript paths,
 working directories, model names, and unknown upstream fields are discarded
