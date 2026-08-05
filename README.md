@@ -9,10 +9,11 @@ presets, 15/30/45/60-minute reminder intervals, and a no-Agent fallback toggle.
 When hydration is already due, either a verified Codex Subagent session or
 three qualifying tool calls in one active Codex turn temporarily upgrades the
 water drop to an original pixel character holding a cup. Subagents are
-classified only from explicit `source.subagent.thread_spawn` rollout metadata,
-never from working directory, timing, process count, nickname, or activity
-volume. The character records through the same deliberate sip action as the
-ambient reminder.
+classified only from explicit upstream signals: `SubagentStart` hooks or
+`source.subagent.thread_spawn` rollout metadata. They are never inferred from
+working directory, timing, process count, nickname, or activity volume. The
+character records through the same deliberate sip action as the ambient
+reminder.
 
 Every displayed volume is an approximation. Health Token does not show a
 medical hydration target or claim to measure actual intake.
@@ -56,9 +57,10 @@ The menu bar reports:
 The adapter follows the public [Codex hooks
 contract](https://developers.openai.com/codex/hooks). A bounded incremental
 tail of recent local rollout files supplies verified Subagent metadata and
-turn-abort events that hooks do not currently expose; startup begins at the
-file tail so completed history is not replayed. Inputs normalize to `AgentEvent`
-values with these kinds:
+terminal lifecycle evidence used for recovery and fallback. Startup restores
+only recently modified verified Subagents whose bounded tail has no completion
+or abort, then begins at each file tail so completed history is not replayed.
+Inputs normalize to `AgentEvent` values with these kinds:
 `sessionStarted`, `promptSubmitted`, `planUpdated`, `toolUsed`,
 `attentionChanged`, `completed`, `aborted`, and `sessionRemoved`. Every event
 contains only session identity, optional verified parent-session identity,

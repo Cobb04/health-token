@@ -505,13 +505,12 @@ func verifiedSubagentEscalatesDueReminder() throws {
     let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
     clock.now.addTimeInterval(30 * 60)
 
-    let escalated = try engine.send(.agentEvent(AgentEvent(
-        kind: .sessionStarted,
+    let escalated = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
         sessionID: "child-session",
-        parentSessionID: "parent-session",
-        timestamp: clock.now,
+        at: clock.now,
         role: .subagent,
-        attention: .none
+        parentSessionID: "parent-session"
     )))
 
     #expect(escalated.status == .dueStrong)
@@ -525,13 +524,12 @@ func preDueSubagentDoesNotCreateReminder() throws {
     let clock = TestClock(now: setup)
     let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
 
-    let started = try engine.send(.agentEvent(AgentEvent(
-        kind: .sessionStarted,
+    let started = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
         sessionID: "child-session",
-        parentSessionID: "parent-session",
-        timestamp: clock.now,
+        at: clock.now,
         role: .subagent,
-        attention: .none
+        parentSessionID: "parent-session"
     )))
     clock.now.addTimeInterval(30 * 60)
     let due = try engine.send(.timeAdvanced)
@@ -549,22 +547,20 @@ func terminalSubagentEventsDowngradeStrongReminder() throws {
         let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
         let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
         clock.now.addTimeInterval(30 * 60)
-        _ = try engine.send(.agentEvent(AgentEvent(
-            kind: .sessionStarted,
+        _ = try engine.send(.agentEvent(agentEvent(
+            .sessionStarted,
             sessionID: "child-session",
-            parentSessionID: "parent-session",
-            timestamp: clock.now,
+            at: clock.now,
             role: .subagent,
-            attention: .none
+            parentSessionID: "parent-session"
         )))
 
-        let downgraded = try engine.send(.agentEvent(AgentEvent(
-            kind: terminalKind,
+        let downgraded = try engine.send(.agentEvent(agentEvent(
+            terminalKind,
             sessionID: "child-session",
-            parentSessionID: "parent-session",
-            timestamp: clock.now,
+            at: clock.now,
             role: .subagent,
-            attention: .none
+            parentSessionID: "parent-session"
         )))
 
         #expect(downgraded.status == .dueAmbient)
@@ -579,13 +575,12 @@ func rootAndSubagentSessionsAreIsolated() throws {
     let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
     let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
     clock.now.addTimeInterval(30 * 60)
-    _ = try engine.send(.agentEvent(AgentEvent(
-        kind: .sessionStarted,
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
         sessionID: "child-a",
-        parentSessionID: "root-a",
-        timestamp: clock.now,
+        at: clock.now,
         role: .subagent,
-        attention: .none
+        parentSessionID: "root-a"
     )))
     _ = try engine.send(.agentEvent(agentEvent(
         .sessionStarted,
@@ -598,13 +593,12 @@ func rootAndSubagentSessionsAreIsolated() throws {
         sessionID: "root-b",
         at: clock.now
     )))
-    let childCompleted = try engine.send(.agentEvent(AgentEvent(
-        kind: .completed,
+    let childCompleted = try engine.send(.agentEvent(agentEvent(
+        .completed,
         sessionID: "child-a",
-        parentSessionID: "root-a",
-        timestamp: clock.now,
+        at: clock.now,
         role: .subagent,
-        attention: .none
+        parentSessionID: "root-a"
     )))
 
     #expect(rootCompleted.reminderLevel == .strong)
@@ -617,13 +611,12 @@ func subagentStrongReminderUsesExistingDrinkRecordPath() throws {
     let clock = TestClock(now: setup)
     let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
     clock.now.addTimeInterval(30 * 60)
-    _ = try engine.send(.agentEvent(AgentEvent(
-        kind: .sessionStarted,
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
         sessionID: "child-session",
-        parentSessionID: "parent-session",
-        timestamp: clock.now,
+        at: clock.now,
         role: .subagent,
-        attention: .none
+        parentSessionID: "parent-session"
     )))
 
     let confirmed = try engine.send(.confirmSip)
@@ -865,13 +858,16 @@ private func agentEvent(
     _ kind: AgentEvent.Kind,
     sessionID: String,
     at timestamp: Date,
+    role: AgentRole = .root,
+    parentSessionID: String? = nil,
     tool: AgentToolClassification? = nil
 ) -> AgentEvent {
     AgentEvent(
         kind: kind,
         sessionID: sessionID,
+        parentSessionID: parentSessionID,
         timestamp: timestamp,
-        role: .root,
+        role: role,
         attention: .none,
         toolClassification: tool
     )

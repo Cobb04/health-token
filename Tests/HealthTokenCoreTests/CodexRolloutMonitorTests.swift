@@ -2,6 +2,73 @@ import Foundation
 import Testing
 @testable import HealthTokenCore
 
+@Test("startup restores only a recent active verified Subagent")
+func startupRestoresOnlyActiveVerifiedSubagent() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+    let activeURL = directory.appendingPathComponent("rollout-active.jsonl")
+    try Data(
+        #"{"type":"session_meta","payload":{"id":"active-child","source":{"subagent":{"thread_spawn":{"parent_thread_id":"active-parent"}}}}}"#.utf8
+    ).write(to: activeURL)
+    try FileManager.default.setAttributes(
+        [.modificationDate: observedAt.addingTimeInterval(-1)],
+        ofItemAtPath: activeURL.path
+    )
+
+    let events = try CodexRolloutMonitor(sessionsURL: directory).poll(
+        observedAt: observedAt
+    )
+
+    #expect(events.count == 1)
+    #expect(events.first?.kind == .sessionStarted)
+    #expect(events.first?.sessionID == "active-child")
+    #expect(events.first?.parentSessionID == "active-parent")
+    #expect(events.first?.role == .subagent)
+}
+
+@Test("startup does not replay completed or stale Subagent sessions")
+func startupDoesNotReplayInactiveSubagents() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let metadata = #"{"type":"session_meta","payload":{"id":"child","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#
+
+    let completedURL = directory.appendingPathComponent("rollout-completed.jsonl")
+    try Data(
+        (metadata + "\n" + #"{"type":"event_msg","payload":{"type":"task_complete"}}"# + "\n").utf8
+    ).write(to: completedURL)
+    try FileManager.default.setAttributes(
+        [.modificationDate: observedAt.addingTimeInterval(-1)],
+        ofItemAtPath: completedURL.path
+    )
+
+    let staleURL = directory.appendingPathComponent("rollout-stale.jsonl")
+    try Data(metadata.replacingOccurrences(of: "\"child\"", with: "\"stale-child\"").utf8)
+        .write(to: staleURL)
+    try FileManager.default.setAttributes(
+        [.modificationDate: observedAt.addingTimeInterval(-5 * 60)],
+        ofItemAtPath: staleURL.path
+    )
+
+    #expect(
+        try CodexRolloutMonitor(sessionsURL: directory)
+            .poll(observedAt: observedAt)
+            .isEmpty
+    )
+}
+
 @Test("explicit thread-spawn metadata starts a verified Subagent session")
 func explicitThreadSpawnStartsSubagentSession() throws {
     let directory = FileManager.default.temporaryDirectory
@@ -96,6 +163,14 @@ func rolloutMetadataFailsClosed() throws {
         #"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#
     ])
     #expect(malformed.isEmpty)
+
+    let whitespaceParent = try pollNewRollout(lines: [
+        #"{"type":"session_meta","payload":{"id":"whitespace-parent","source":{"subagent":{"thread_spawn":{"parent_thread_id":"   "}}}}}"#,
+        #"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#
+    ])
+    #expect(whitespaceParent.count == 1)
+    #expect(whitespaceParent.first?.role == .root)
+    #expect(whitespaceParent.first?.parentSessionID == nil)
 
     let oversizedMetadata =
         #"{"type":"session_meta","payload":{"id":"oversized-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session"}}},"arbitrary":""#

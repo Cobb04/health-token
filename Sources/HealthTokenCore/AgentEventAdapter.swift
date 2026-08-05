@@ -101,13 +101,23 @@ public enum AgentEventAdapter {
             let record = object as? [String: Any],
             record["type"] as? String == "event_msg",
             let payload = record["payload"] as? [String: Any],
-            payload["type"] as? String == "turn_aborted"
+            let eventType = payload["type"] as? String
         else {
             return nil
         }
 
+        let kind: AgentEvent.Kind
+        switch eventType {
+        case "turn_aborted":
+            kind = .aborted
+        case "task_complete":
+            kind = .completed
+        default:
+            return nil
+        }
+
         return AgentEvent(
-            kind: .aborted,
+            kind: kind,
             sessionID: sessionID,
             parentSessionID: parentSessionID,
             timestamp: observedAt,

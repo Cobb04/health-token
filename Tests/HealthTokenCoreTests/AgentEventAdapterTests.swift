@@ -229,3 +229,30 @@ func rolloutAbortNormalizes() throws {
     #expect(!encodedText.contains("synthetic private reason"))
     #expect(!encodedText.contains("synthetic private payload"))
 }
+
+@Test("synthetic rollout completion normalizes without retaining output")
+func rolloutCompletionNormalizes() throws {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let line = Data(
+        #"{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"synthetic private output"}}"#.utf8
+    )
+
+    let event = try #require(
+        AgentEventAdapter.normalizeRolloutLine(
+            line,
+            sessionID: "synthetic-child",
+            role: .subagent,
+            parentSessionID: "synthetic-parent",
+            observedAt: observedAt
+        )
+    )
+    let encodedText = try #require(
+        String(data: JSONEncoder().encode(event), encoding: .utf8)
+    )
+
+    #expect(event.kind == .completed)
+    #expect(event.sessionID == "synthetic-child")
+    #expect(event.parentSessionID == "synthetic-parent")
+    #expect(event.role == .subagent)
+    #expect(!encodedText.contains("synthetic private output"))
+}
