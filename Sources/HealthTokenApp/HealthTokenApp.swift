@@ -1,4 +1,5 @@
 import AppKit
+import HealthTokenCore
 import SwiftUI
 
 @main
@@ -23,7 +24,10 @@ final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.accessory)
         panelController = AmbientReminderPanelController(model: model)
         model.refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(
+            withTimeInterval: CodexObservationPolicy.presentationPollInterval,
+            repeats: true
+        ) { [weak self] _ in
             Task { @MainActor in
                 self?.model.refresh()
             }

@@ -19,6 +19,7 @@ public final class HydrationEngine {
         case closeReminder
         case confirmSip
         case agentEvent(AgentEvent)
+        case agentObservationUnavailable
         case setSipEstimate(SipEstimate)
         case setReminderInterval(TimeInterval)
         case snooze
@@ -194,6 +195,10 @@ public final class HydrationEngine {
             }
         case let .agentEvent(event):
             processAgentEvent(event)
+            status = evaluatedStatus()
+        case .agentObservationUnavailable:
+            agentSessions.removeAll(keepingCapacity: false)
+            agentAwarePresentation = false
             status = evaluatedStatus()
         case let .undoSip(recordID):
             guard let context = activeUndoContext,

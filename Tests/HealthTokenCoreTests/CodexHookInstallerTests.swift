@@ -92,6 +92,13 @@ func integrationHealthReflectsAvailableObservation() throws {
             recentlyObservedEvent: true
         ) == .connected
     )
+    #expect(
+        installer.health(
+            command: command,
+            recentlyObservedEvent: true,
+            observationFailed: true
+        ) == .fallbackOnly
+    )
 
     var partial = try hooksObject(at: hooksURL)
     var partialHooks = try #require(partial["hooks"] as? [String: Any])
