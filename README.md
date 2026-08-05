@@ -62,9 +62,12 @@ The menu bar reports:
 The adapter follows the public [Codex hooks
 contract](https://developers.openai.com/codex/hooks). A bounded incremental
 tail of recent local rollout files supplies verified Subagent metadata and
-terminal lifecycle evidence used for recovery and fallback. Startup restores
-only recently modified verified Subagents whose bounded tail has no completion
-or abort, then begins at each file tail so completed history is not replayed.
+terminal lifecycle evidence used for recovery and fallback. New local
+`request_user_input` and approval records are correlated to their matching
+tool output or execution start using request IDs kept only in memory. Startup
+restores only recently modified verified Subagents whose bounded tail has no
+completion or abort, then begins at each file tail so completed history is not
+replayed.
 Inputs normalize to `AgentEvent` values with these kinds:
 `sessionStarted`, `promptSubmitted`, `planUpdated`, `toolUsed`,
 `attentionChanged`, `completed`, `aborted`, and `sessionRemoved`. Every event

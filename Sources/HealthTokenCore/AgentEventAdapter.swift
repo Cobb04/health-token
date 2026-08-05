@@ -95,24 +95,95 @@ public enum AgentEventAdapter {
         parentSessionID: String? = nil,
         observedAt: Date
     ) -> AgentEvent? {
+        var pendingAttentionRequestIDs = Set<String>()
+        return normalizeRolloutLine(
+            data,
+            sessionID: sessionID,
+            role: role,
+            parentSessionID: parentSessionID,
+            observedAt: observedAt,
+            pendingAttentionRequestIDs: &pendingAttentionRequestIDs
+        )
+    }
+
+    static func normalizeRolloutLine(
+        _ data: Data,
+        sessionID: String,
+        role: AgentRole,
+        parentSessionID: String? = nil,
+        observedAt: Date,
+        pendingAttentionRequestIDs: inout Set<String>
+    ) -> AgentEvent? {
         guard
             !sessionID.isEmpty,
             let object = try? JSONSerialization.jsonObject(with: data),
             let record = object as? [String: Any],
-            record["type"] as? String == "event_msg",
-            let payload = record["payload"] as? [String: Any],
-            let eventType = payload["type"] as? String
+            let recordType = record["type"] as? String,
+            let payload = record["payload"] as? [String: Any]
         else {
             return nil
         }
 
         let kind: AgentEvent.Kind
-        switch eventType {
-        case "turn_aborted":
-            kind = .aborted
-        case "task_complete":
-            kind = .completed
-        default:
+        let attention: AgentAttention
+        let toolClassification: AgentToolClassification?
+
+        if recordType == "response_item" {
+            guard
+                payload["type"] as? String == "function_call_output",
+                let callID = payload["call_id"] as? String,
+                pendingAttentionRequestIDs.remove(callID) != nil,
+                pendingAttentionRequestIDs.isEmpty
+            else {
+                return nil
+            }
+            kind = .attentionChanged
+            attention = .none
+            toolClassification = .userInput
+        } else if recordType == "event_msg",
+                  let eventType = payload["type"] as? String {
+            switch eventType {
+            case "turn_aborted":
+                pendingAttentionRequestIDs.removeAll()
+                kind = .aborted
+                attention = .none
+                toolClassification = nil
+            case "task_complete":
+                pendingAttentionRequestIDs.removeAll()
+                kind = .completed
+                attention = .none
+                toolClassification = nil
+            case "request_user_input",
+                 "exec_approval_request",
+                 "apply_patch_approval_request",
+                 "request_permissions":
+                guard
+                    let callID = payload["call_id"] as? String,
+                    !callID.isEmpty
+                else {
+                    return nil
+                }
+                pendingAttentionRequestIDs.insert(callID)
+                kind = .attentionChanged
+                attention = .required
+                toolClassification = .userInput
+            case "exec_command_begin",
+                 "patch_apply_begin",
+                 "mcp_tool_call_begin":
+                guard
+                    let callID = payload["call_id"] as? String,
+                    pendingAttentionRequestIDs.remove(callID) != nil,
+                    pendingAttentionRequestIDs.isEmpty
+                else {
+                    return nil
+                }
+                kind = .attentionChanged
+                attention = .none
+                toolClassification = .userInput
+            default:
+                return nil
+            }
+        } else {
             return nil
         }
 
@@ -122,7 +193,8 @@ public enum AgentEventAdapter {
             parentSessionID: parentSessionID,
             timestamp: observedAt,
             role: role,
-            attention: .none
+            attention: attention,
+            toolClassification: toolClassification
         )
     }
 

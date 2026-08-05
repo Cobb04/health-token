@@ -876,6 +876,7 @@ func rootAttentionCollapsesStrongAndPreservesHydration() throws {
     )
     let clock = TestClock(now: setup.addingTimeInterval(30 * 60))
     let engine = try HydrationEngine(clock: clock, store: store)
+    _ = try engine.send(.setNoAgentFallbackEnabled(false))
     for _ in 0..<3 {
         _ = try engine.send(.agentEvent(agentEvent(
             .toolUsed,
@@ -1109,6 +1110,56 @@ func backgroundMetadataDoesNotSuppressStrongReminder() throws {
 
     #expect(metadata.status == .dueStrong)
     #expect(metadata.reminderLevel == .strong)
+}
+
+@Test("same-session plan and tool activity cannot resolve attention")
+func sameSessionActivityDoesNotResolveAttention() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "interactive-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    _ = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+
+    let plan = try engine.send(.agentEvent(agentEvent(
+        .planUpdated,
+        sessionID: "interactive-root",
+        at: clock.now,
+        tool: .plan
+    )))
+    var tool = plan
+    for _ in 0..<3 {
+        tool = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "interactive-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    #expect(plan.reminderLevel == .ambient)
+    #expect(tool.reminderLevel == .ambient)
+
+    let resolved = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    #expect(resolved.reminderLevel == .ambient)
 }
 
 private func agentEvent(

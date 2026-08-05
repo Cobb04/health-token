@@ -12,13 +12,16 @@ public final class CodexRolloutMonitor {
             offset: 0,
             sessionID: nil,
             role: .root,
-            parentSessionID: nil
+            parentSessionID: nil,
+            pendingAttentionRequestIDs: []
         )
 
         var offset: UInt64
         var sessionID: String?
         var role: AgentRole
         var parentSessionID: String?
+        var pendingAttentionRequestIDs: Set<String>
+        var lastAttentionActivityAt: Date? = nil
         var remainder = Data()
     }
 
@@ -81,7 +84,8 @@ public final class CodexRolloutMonitor {
                     offset: size,
                     sessionID: context?.sessionID,
                     role: context?.role ?? .root,
-                    parentSessionID: context?.parentSessionID
+                    parentSessionID: context?.parentSessionID,
+                    pendingAttentionRequestIDs: []
                 )
                 if
                     let context,
@@ -105,6 +109,14 @@ public final class CodexRolloutMonitor {
             var cursor = cursors[rolloutURL] ?? .empty
             if cursor.offset > size {
                 cursor = .empty
+            }
+            if
+                let lastAttentionActivityAt = cursor.lastAttentionActivityAt,
+                observedAt.timeIntervalSince(lastAttentionActivityAt)
+                    >= activeSessionInterval
+            {
+                cursor.pendingAttentionRequestIDs.removeAll()
+                cursor.lastAttentionActivityAt = nil
             }
             guard cursor.offset < size else {
                 cursors[rolloutURL] = cursor
@@ -135,6 +147,10 @@ public final class CodexRolloutMonitor {
             for line in lines {
                 if let context = sessionContext(from: line) {
                     let isNewSession = cursor.sessionID != context.sessionID
+                    if isNewSession {
+                        cursor.pendingAttentionRequestIDs.removeAll()
+                        cursor.lastAttentionActivityAt = nil
+                    }
                     cursor.sessionID = context.sessionID
                     cursor.role = context.role
                     cursor.parentSessionID = context.parentSessionID
@@ -147,14 +163,20 @@ public final class CodexRolloutMonitor {
                     continue
                 }
                 guard let sessionID = cursor.sessionID else { continue }
+                let previousPendingRequestIDs = cursor.pendingAttentionRequestIDs
                 if let event = AgentEventAdapter.normalizeRolloutLine(
                     line,
                     sessionID: sessionID,
                     role: cursor.role,
                     parentSessionID: cursor.parentSessionID,
-                    observedAt: observedAt
+                    observedAt: observedAt,
+                    pendingAttentionRequestIDs: &cursor.pendingAttentionRequestIDs
                 ) {
                     events.append(event)
+                }
+                if cursor.pendingAttentionRequestIDs != previousPendingRequestIDs {
+                    cursor.lastAttentionActivityAt = cursor
+                        .pendingAttentionRequestIDs.isEmpty ? nil : observedAt
                 }
             }
             cursors[rolloutURL] = cursor

@@ -310,13 +310,8 @@ public final class HydrationEngine {
                 invalidateAutonomousSignals()
             }
         case .planUpdated:
-            updateAgentSession(event) { activity in
-                activity.attention = .none
-            }
+            updateAgentSession(event) { _ in }
         case .toolUsed:
-            updateAgentSession(event) { activity in
-                activity.attention = .none
-            }
             let canRecordAutonomousWork = !hasAttentionRequiredRootSession
             updateAgentSession(event) { activity in
                 if event.toolClassification == .ordinary,

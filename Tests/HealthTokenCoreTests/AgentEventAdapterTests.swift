@@ -256,3 +256,56 @@ func rolloutCompletionNormalizes() throws {
     #expect(event.role == .subagent)
     #expect(!encodedText.contains("synthetic private output"))
 }
+
+@Test("local user-input rollout records normalize without content")
+func rolloutUserInputNormalizesWithoutContent() throws {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    var pendingRequestIDs = Set<String>()
+    let request = Data(
+        #"{"type":"event_msg","payload":{"type":"request_user_input","call_id":"synthetic-call","questions":[{"question":"synthetic private question","options":[{"label":"synthetic private option"}]}]}}"#.utf8
+    )
+    let unrelatedOutput = Data(
+        #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"other-call","output":"synthetic unrelated private output"}}"#.utf8
+    )
+    let answer = Data(
+        #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"synthetic-call","output":"synthetic private answer"}}"#.utf8
+    )
+
+    let required = try #require(
+        AgentEventAdapter.normalizeRolloutLine(
+            request,
+            sessionID: "synthetic-root",
+            role: .root,
+            observedAt: observedAt,
+            pendingAttentionRequestIDs: &pendingRequestIDs
+        )
+    )
+    let unrelated = AgentEventAdapter.normalizeRolloutLine(
+        unrelatedOutput,
+        sessionID: "synthetic-root",
+        role: .root,
+        observedAt: observedAt,
+        pendingAttentionRequestIDs: &pendingRequestIDs
+    )
+    let resolved = try #require(
+        AgentEventAdapter.normalizeRolloutLine(
+            answer,
+            sessionID: "synthetic-root",
+            role: .root,
+            observedAt: observedAt,
+            pendingAttentionRequestIDs: &pendingRequestIDs
+        )
+    )
+    let encoded = try JSONEncoder().encode([required, resolved])
+    let encodedText = try #require(String(data: encoded, encoding: .utf8))
+
+    #expect(required.kind == .attentionChanged)
+    #expect(required.attention == .required)
+    #expect(unrelated == nil)
+    #expect(resolved.kind == .attentionChanged)
+    #expect(resolved.attention == .none)
+    #expect(pendingRequestIDs.isEmpty)
+    #expect(!encodedText.contains("synthetic private question"))
+    #expect(!encodedText.contains("synthetic private option"))
+    #expect(!encodedText.contains("synthetic private answer"))
+}
