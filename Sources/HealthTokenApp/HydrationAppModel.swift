@@ -63,6 +63,28 @@ final class HydrationAppModel: ObservableObject {
         }
     }
 
+    init(
+        engine: HydrationEngine,
+        integrationHealth: CodexIntegrationHealth
+    ) {
+        let isolatedRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("health-token-window-integration", isDirectory: true)
+        let sessionsURL = isolatedRoot.appendingPathComponent("sessions", isDirectory: true)
+        self.engine = engine
+        hookCommand = ""
+        hookInstaller = CodexHookInstaller(
+            hooksURL: isolatedRoot.appendingPathComponent("hooks.json"),
+            sessionsURL: sessionsURL
+        )
+        eventInbox = CodexEventInbox(
+            directoryURL: isolatedRoot.appendingPathComponent("events", isDirectory: true)
+        )
+        rolloutMonitor = CodexRolloutMonitor(sessionsURL: sessionsURL)
+        self.integrationHealth = integrationHealth
+        isCodexObservationEnabled = false
+        snapshot = engine.snapshot
+    }
+
     func refresh() {
         do {
             isCodexObservationEnabled = hookInstaller.isInstalled(
@@ -178,6 +200,10 @@ final class HydrationAppModel: ObservableObject {
 
     func undoSip(_ recordID: UUID) {
         send(.undoSip(recordID))
+    }
+
+    func sendForWindowIntegrationTest(_ action: HydrationEngine.Action) {
+        send(action)
     }
 
     private func send(_ action: HydrationEngine.Action) {

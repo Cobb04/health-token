@@ -5,17 +5,25 @@ import SwiftUI
 
 @MainActor
 final class AmbientReminderPanelController {
-    private let panel: AmbientReminderPanel
+    let panel: AmbientReminderPanel
     private let hostingView: InteractiveHostingView<AmbientReminderView>
-    private let focusAuthorization = ReminderKeyboardFocusAuthorization()
+    private let activeDisplay: @MainActor () -> ReminderDisplayGeometry?
     private var snapshotObservation: AnyCancellable?
     private var screenObservation: NSObjectProtocol?
     private var globalPointerMonitor: Any?
     private var localPointerMonitor: Any?
     private var currentSnapshot: HydrationSnapshot
 
-    init(model: HydrationAppModel) {
+    convenience init(model: HydrationAppModel) {
+        self.init(model: model, activeDisplay: Self.currentActiveDisplay)
+    }
+
+    init(
+        model: HydrationAppModel,
+        activeDisplay: @MainActor @escaping () -> ReminderDisplayGeometry?
+    ) {
         currentSnapshot = model.snapshot
+        self.activeDisplay = activeDisplay
         panel = AmbientReminderPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -38,7 +46,7 @@ final class AmbientReminderPanelController {
         hostingView.rootView = AmbientReminderView(
             model: model,
             onIntentionalInteraction: { [weak self] in
-                self?.authorizeKeyboardFocus()
+                self?.userDidIntentionallyInteract()
             }
         )
 
@@ -88,7 +96,6 @@ final class AmbientReminderPanelController {
     private func render(_ snapshot: HydrationSnapshot) {
         currentSnapshot = snapshot
         guard snapshot.reminderLevel != .hidden else {
-            focusAuthorization.reminderDidClose()
             panel.allowsKeyboardFocus = false
             panel.orderOut(nil)
             return
@@ -102,28 +109,21 @@ final class AmbientReminderPanelController {
         updatePointerInterception()
 
         if !panel.isVisible {
-            focusAuthorization.reminderDidAppear()
             panel.orderFrontRegardless()
         }
     }
 
     private func positionPanel(size: NSSize) {
-        let mouseLocation = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first {
-            NSMouseInRect(mouseLocation, $0.frame, false)
-        } ?? NSScreen.main
-
-        guard let screen else { return }
+        guard let activeDisplay = activeDisplay() else { return }
 
         let frame = ReminderPanelLayout.frame(
             for: size,
-            on: ReminderDisplayGeometry(screen: screen)
+            on: activeDisplay
         )
         panel.setFrame(frame, display: true)
     }
 
-    private func authorizeKeyboardFocus() {
-        focusAuthorization.userDidIntentionallyInteract()
+    func userDidIntentionallyInteract() {
         panel.allowsKeyboardFocus = true
         DispatchQueue.main.async { [weak self] in
             guard let self, self.panel.isVisible else { return }
@@ -138,7 +138,10 @@ final class AmbientReminderPanelController {
     }
 
     private func updatePointerInterception() {
-        let screenPoint = NSEvent.mouseLocation
+        updatePointerInterception(at: NSEvent.mouseLocation)
+    }
+
+    func updatePointerInterception(at screenPoint: CGPoint) {
         let localPoint = CGPoint(
             x: screenPoint.x - panel.frame.minX,
             y: screenPoint.y - panel.frame.minY
@@ -147,6 +150,32 @@ final class AmbientReminderPanelController {
             localPoint,
             in: hostingView.bounds
         )
+    }
+
+    func activeDisplayDidChange() {
+        render(currentSnapshot)
+    }
+
+    var accessibleControlNames: [String] {
+        let sipMilliliters = currentSnapshot.settings.sipEstimate.milliliters
+        if currentSnapshot.reminderLevel == .confirmation,
+           let record = currentSnapshot.undoableDrinkRecord {
+            return [ReminderControlName.undo(
+                sipMilliliters: record.estimatedMilliliters
+            )]
+        }
+        if currentSnapshot.reminderLevel == .strong {
+            return [ReminderControlName.drink(sipMilliliters: sipMilliliters)]
+        }
+        if currentSnapshot.detailsExpanded {
+            return [
+                ReminderControlName.drink(sipMilliliters: sipMilliliters),
+                ReminderControlName.snooze,
+                ReminderControlName.pause,
+                ReminderControlName.settings
+            ]
+        }
+        return []
     }
 
     private func panelSize(for snapshot: HydrationSnapshot) -> NSSize {
@@ -161,9 +190,17 @@ final class AmbientReminderPanelController {
         }
         return NSSize(width: 48, height: 48)
     }
+
+    private static func currentActiveDisplay() -> ReminderDisplayGeometry? {
+        let mouseLocation = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first {
+            NSMouseInRect(mouseLocation, $0.frame, false)
+        } ?? NSScreen.main
+        return screen.map(ReminderDisplayGeometry.init(screen:))
+    }
 }
 
-private final class AmbientReminderPanel: NSPanel {
+final class AmbientReminderPanel: NSPanel {
     var allowsKeyboardFocus = false
     override var canBecomeKey: Bool { allowsKeyboardFocus }
     override var canBecomeMain: Bool { false }

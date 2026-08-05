@@ -47,28 +47,19 @@ enum ReminderPanelLayout {
     static func frame(for size: CGSize, on display: ReminderDisplayGeometry) -> CGRect {
         let centerX = display.notchCenterX ?? display.frame.midX
         let topEdge = display.visibleFrame.maxY
-        return CGRect(
-            x: centerX - size.width / 2,
-            y: topEdge - size.height,
-            width: size.width,
-            height: size.height
+        let width = min(size.width, display.visibleFrame.width)
+        let height = min(size.height, display.visibleFrame.height)
+        let centeredX = centerX - width / 2
+        let x = min(
+            max(centeredX, display.visibleFrame.minX),
+            display.visibleFrame.maxX - width
         )
-    }
-}
-
-@MainActor
-final class ReminderKeyboardFocusAuthorization {
-    private(set) var isAuthorized = false
-
-    func reminderDidAppear() {}
-    func reminderLevelDidChange() {}
-
-    func userDidIntentionallyInteract() {
-        isAuthorized = true
-    }
-
-    func reminderDidClose() {
-        isAuthorized = false
+        return CGRect(
+            x: x,
+            y: max(display.visibleFrame.minY, topEdge - height),
+            width: width,
+            height: height
+        )
     }
 }
 
@@ -90,44 +81,10 @@ enum ReminderHitRegion {
     }
 }
 
-struct ReminderAccessibilityPresentation {
+struct ReminderAccessibilityCue {
     let status: HydrationStatus
     let reminderLevel: ReminderLevel
     let integrationHealth: CodexIntegrationHealth
-    let isExpanded: Bool
-    let sipMilliliters: Int
-
-    init(
-        status: HydrationStatus,
-        reminderLevel: ReminderLevel,
-        integrationHealth: CodexIntegrationHealth,
-        isExpanded: Bool,
-        sipMilliliters: Int = SipEstimate.regular.milliliters
-    ) {
-        self.status = status
-        self.reminderLevel = reminderLevel
-        self.integrationHealth = integrationHealth
-        self.isExpanded = isExpanded
-        self.sipMilliliters = sipMilliliters
-    }
-
-    var controlNames: [String] {
-        if reminderLevel == .confirmation {
-            return ["撤销刚才的饮水记录"]
-        }
-        if reminderLevel == .strong {
-            return ["喝了一口，记录约 \(sipMilliliters) 毫升"]
-        }
-        if isExpanded {
-            return [
-                "喝了一口，记录约 \(sipMilliliters) 毫升",
-                "稍后提醒十五分钟",
-                "暂停 Health Token",
-                "饮水设置"
-            ]
-        }
-        return reminderLevel == .ambient ? ["饮水提醒，点击展开"] : []
-    }
 
     var nonColorCue: String {
         if status == .paused { return "已暂停" }
@@ -139,7 +96,29 @@ struct ReminderAccessibilityPresentation {
     }
 }
 
+enum ReminderControlName {
+    static func drink(sipMilliliters: Int) -> String {
+        "喝了一口，记录约 \(sipMilliliters) 毫升"
+    }
+
+    static let snooze = "稍后提醒十五分钟"
+    static let pause = "暂停 Health Token"
+    static let settings = "饮水设置"
+
+    static func undo(sipMilliliters: Int) -> String {
+        "撤销刚才约 \(sipMilliliters) 毫升的饮水记录"
+    }
+}
+
 struct ReminderTransitionPolicy {
     let reduceMotion: Bool
     var usesScale: Bool { !reduceMotion }
+}
+
+struct ReminderAppearancePolicy {
+    let increasedContrast: Bool
+
+    var showsGlow: Bool { !increasedContrast }
+    var dropBackgroundOpacity: Double { increasedContrast ? 0.95 : 0.82 }
+    var cardBorderOpacity: Double { increasedContrast ? 1 : 0.18 }
 }
