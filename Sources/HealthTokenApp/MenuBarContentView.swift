@@ -74,6 +74,8 @@ struct MenuBarContentView: View {
             "下一次低干扰提醒正在计时"
         case .dueAmbient:
             "低干扰饮水提醒已显示"
+        case .dueStrong:
+            "Codex 持续工作，饮水强提醒已显示"
         case .snoozed:
             "强提醒已稍后，饮水仍到期"
         case .paused:

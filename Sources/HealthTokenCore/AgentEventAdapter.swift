@@ -17,6 +17,7 @@ public enum AgentEventAdapter {
         }
 
         let isSubagent = hookEvent == .subagentStart || hookEvent == .subagentStop
+        var normalizedSessionID = sessionID
         if isSubagent {
             guard
                 let agentID = payload["agent_id"] as? String,
@@ -24,6 +25,7 @@ public enum AgentEventAdapter {
             else {
                 return nil
             }
+            normalizedSessionID = agentID
         }
 
         let kind: AgentEvent.Kind
@@ -77,7 +79,7 @@ public enum AgentEventAdapter {
 
         return AgentEvent(
             kind: kind,
-            sessionID: sessionID,
+            sessionID: normalizedSessionID,
             timestamp: observedAt,
             role: isSubagent ? .subagent : .root,
             attention: attention(for: hookEvent),
@@ -126,7 +128,9 @@ public enum AgentEventAdapter {
         let normalized = toolName.lowercased()
         return normalized.contains("telemetry")
             || normalized.contains("metrics")
-            || normalized.contains("metadata_write")
+            || normalized.contains("metadata")
+            || normalized.contains("health_token")
+            || normalized.contains("healthtoken")
     }
 
     private static func planClassification(

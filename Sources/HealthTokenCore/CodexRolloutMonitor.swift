@@ -34,6 +34,24 @@ public final class CodexRolloutMonitor {
     public func poll(observedAt: Date) throws -> [AgentEvent] {
         let rolloutURLs = try recentRolloutURLs()
         let activeURLs = Set(rolloutURLs)
+        var removedSessionIDs = Set<String>()
+        let removedEvents = cursors.compactMap { url, cursor -> AgentEvent? in
+            guard
+                initialized,
+                !fileManager.fileExists(atPath: url.path),
+                let sessionID = cursor.sessionID,
+                removedSessionIDs.insert(sessionID).inserted
+            else {
+                return nil
+            }
+            return AgentEvent(
+                kind: .sessionRemoved,
+                sessionID: sessionID,
+                timestamp: observedAt,
+                role: cursor.role,
+                attention: .none
+            )
+        }
         cursors = cursors.filter { activeURLs.contains($0.key) }
 
         if !initialized {
@@ -50,7 +68,7 @@ public final class CodexRolloutMonitor {
             return []
         }
 
-        var events: [AgentEvent] = []
+        var events = removedEvents
         for rolloutURL in rolloutURLs {
             let size = try fileSize(of: rolloutURL)
             var cursor = cursors[rolloutURL]

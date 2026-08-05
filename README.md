@@ -6,6 +6,10 @@ the top center of the active display. Opening the drop lets you record one
 deliberate sip, snooze for 15 minutes, undo a just-created record, and see
 today's estimated total. The menu bar provides pause/resume, 15/25/35 mL sip
 presets, 15/30/45/60-minute reminder intervals, and a no-Agent fallback toggle.
+When hydration is already due, three qualifying tool calls in one active Codex
+turn temporarily upgrade the water drop to an original pixel character holding
+a cup. The character records through the same deliberate sip action as the
+ambient reminder.
 
 Every displayed volume is an approximation. Health Token does not show a
 medical hydration target or claim to measure actual intake.
@@ -52,9 +56,17 @@ tail of recent local rollout files supplies turn-abort events that hooks do not
 currently expose; startup begins at the file tail so completed history is not
 replayed. Inputs normalize to `AgentEvent` values with these kinds:
 `sessionStarted`, `promptSubmitted`, `planUpdated`, `toolUsed`,
-`attentionChanged`, `completed`, and `aborted`. Every event contains only
-session identity, receipt timestamp, root/Subagent role, attention state, and
-an optional `ordinary`, `plan`, or `userInput` tool classification.
+`attentionChanged`, `completed`, `aborted`, and `sessionRemoved`. Every event
+contains only session identity, receipt timestamp, root/Subagent role,
+attention state, and an optional `ordinary`, `plan`, or `userInput` tool
+classification.
+
+Qualifying tool streaks are isolated per session and reset by user input,
+completion, abort, session removal, or five minutes without session activity.
+Plan updates and metadata, telemetry, or Health Token integration operations do
+not contribute to a streak. Completion or expiry collapses the pixel reminder
+back to the persistent water drop without recording a drink or clearing the
+hydration cycle.
 
 Prompt bodies, source code, tool arguments, assistant output, transcript paths,
 working directories, model names, and unknown upstream fields are discarded

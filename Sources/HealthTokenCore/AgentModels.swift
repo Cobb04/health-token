@@ -36,6 +36,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
         case attentionChanged
         case completed
         case aborted
+        case sessionRemoved
     }
 
     public let kind: Kind

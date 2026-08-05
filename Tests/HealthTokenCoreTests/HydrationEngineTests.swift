@@ -456,6 +456,288 @@ func codexActivityEnablesAgentAwareReminder() throws {
     #expect(agentAware.records.isEmpty)
 }
 
+@Test("a due reminder escalates only on the third qualifying tool in one turn")
+func qualifyingToolStreakEscalatesOnThirdTool() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(
+        clock: clock,
+        store: InMemoryHydrationStore()
+    )
+    clock.now.addTimeInterval(30 * 60)
+
+    let plan = try engine.send(.agentEvent(agentEvent(
+        .planUpdated,
+        sessionID: "turn-a",
+        at: clock.now,
+        tool: .plan
+    )))
+    let first = try engine.send(.agentEvent(agentEvent(
+        .toolUsed,
+        sessionID: "turn-a",
+        at: clock.now,
+        tool: .ordinary
+    )))
+    let second = try engine.send(.agentEvent(agentEvent(
+        .toolUsed,
+        sessionID: "turn-a",
+        at: clock.now,
+        tool: .ordinary
+    )))
+    let third = try engine.send(.agentEvent(agentEvent(
+        .toolUsed,
+        sessionID: "turn-a",
+        at: clock.now,
+        tool: .ordinary
+    )))
+
+    #expect(plan.reminderLevel == .ambient)
+    #expect(first.reminderLevel == .ambient)
+    #expect(second.reminderLevel == .ambient)
+    #expect(third.status.rawValue == "dueStrong")
+    #expect(third.reminderLevel.rawValue == "strong")
+}
+
+@Test("tool streaks are isolated by active Codex session")
+func toolStreaksAreSessionScoped() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+
+    for sessionID in ["turn-a", "turn-b", "turn-a", "turn-b"] {
+        let snapshot = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: sessionID,
+            at: clock.now,
+            tool: .ordinary
+        )))
+        #expect(snapshot.reminderLevel == .ambient)
+    }
+
+    let thirdForA = try engine.send(.agentEvent(agentEvent(
+        .toolUsed,
+        sessionID: "turn-a",
+        at: clock.now,
+        tool: .ordinary
+    )))
+    #expect(thirdForA.reminderLevel.rawValue == "strong")
+}
+
+@Test("user input resets the qualifying tool streak for its turn")
+func userInputResetsToolStreak() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+
+    for _ in 0..<2 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "turn-a",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    _ = try engine.send(.agentEvent(agentEvent(
+        .promptSubmitted,
+        sessionID: "turn-a",
+        at: clock.now
+    )))
+    for _ in 0..<2 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "turn-a",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    #expect(engine.snapshot.reminderLevel == .ambient)
+}
+
+@Test("completion and abort remove the autonomous signal without clearing due")
+func terminalEventsDowngradeStrongReminder() throws {
+    let terminalKinds: [AgentEvent.Kind] = [.completed, .aborted]
+
+    for terminalKind in terminalKinds {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+        let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+        clock.now.addTimeInterval(30 * 60)
+        for _ in 0..<3 {
+            _ = try engine.send(.agentEvent(agentEvent(
+                .toolUsed,
+                sessionID: "turn-a",
+                at: clock.now,
+                tool: .ordinary
+            )))
+        }
+
+        let downgraded = try engine.send(.agentEvent(agentEvent(
+            terminalKind,
+            sessionID: "turn-a",
+            at: clock.now
+        )))
+
+        #expect(downgraded.status == .dueAmbient)
+        #expect(downgraded.reminderLevel == .ambient)
+        #expect(downgraded.records.isEmpty)
+    }
+}
+
+@Test("session removal resets only the removed session streak")
+func sessionRemovalResetsStreak() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    let removed = try #require(AgentEvent.Kind(rawValue: "sessionRemoved"))
+    clock.now.addTimeInterval(30 * 60)
+    for _ in 0..<2 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "turn-a",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    _ = try engine.send(.agentEvent(agentEvent(
+        removed,
+        sessionID: "turn-a",
+        at: clock.now
+    )))
+    let nextTool = try engine.send(.agentEvent(agentEvent(
+        .toolUsed,
+        sessionID: "turn-a",
+        at: clock.now,
+        tool: .ordinary
+    )))
+
+    #expect(nextTool.reminderLevel == .ambient)
+}
+
+@Test("a stale session expires its strong signal and tool streak")
+func staleSessionExpiresAutonomousSignal() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "turn-a",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    #expect(engine.snapshot.reminderLevel.rawValue == "strong")
+
+    clock.now.addTimeInterval(5 * 60)
+    let expired = try engine.send(.timeAdvanced)
+    let nextTool = try engine.send(.agentEvent(agentEvent(
+        .toolUsed,
+        sessionID: "turn-a",
+        at: clock.now,
+        tool: .ordinary
+    )))
+
+    #expect(expired.status == .dueAmbient)
+    #expect(expired.reminderLevel == .ambient)
+    #expect(nextTool.reminderLevel == .ambient)
+}
+
+@Test("tool streaks never create a reminder before hydration is due")
+func toolStreakCannotMakeHydrationDue() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "turn-a",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    #expect(engine.snapshot.status == .accumulating)
+    #expect(engine.snapshot.reminderLevel == .hidden)
+    #expect(engine.snapshot.records.isEmpty)
+    #expect(engine.snapshot.cycle.startedAt == setup)
+}
+
+@Test("a pre-due tool streak cannot upgrade the reminder when the cycle becomes due")
+func preDueToolStreakDoesNotCarryIntoDueState() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup.addingTimeInterval(30 * 60 - 1))
+    let settings = HydrationSettings()
+    let engine = try HydrationEngine(
+        clock: clock,
+        store: InMemoryHydrationStore(
+            persistence: HydrationPersistence(
+                settings: settings,
+                records: [],
+                cycle: HydrationCycle(
+                    startedAt: setup,
+                    reminderInterval: settings.reminderInterval
+                )
+            )
+        )
+    )
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "turn-a",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    clock.now.addTimeInterval(1)
+    let due = try engine.send(.timeAdvanced)
+
+    #expect(due.status == .dueAmbient)
+    #expect(due.reminderLevel == .ambient)
+}
+
+@Test("confirming from strong records one sip and starts one new cycle")
+func strongReminderUsesExistingDrinkRecordPath() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "turn-a",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    let confirmed = try engine.send(.confirmSip)
+    let duplicate = try engine.send(.confirmSip)
+
+    #expect(confirmed.records.count == 1)
+    #expect(confirmed.todayEstimatedMilliliters == 25)
+    #expect(confirmed.cycle.startedAt == clock.now)
+    #expect(confirmed.status == .accumulating)
+    #expect(duplicate.records.count == 1)
+}
+
+private func agentEvent(
+    _ kind: AgentEvent.Kind,
+    sessionID: String,
+    at timestamp: Date,
+    tool: AgentToolClassification? = nil
+) -> AgentEvent {
+    AgentEvent(
+        kind: kind,
+        sessionID: sessionID,
+        timestamp: timestamp,
+        role: .root,
+        attention: .none,
+        toolClassification: tool
+    )
+}
+
 private final class TestClock: HydrationClock {
     var now: Date
 

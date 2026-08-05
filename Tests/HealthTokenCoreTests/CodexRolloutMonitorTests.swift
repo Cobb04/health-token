@@ -52,6 +52,34 @@ func rolloutFallbackObservesOnlyLiveAborts() throws {
     )
 }
 
+@Test("rollout removal emits a session-removed lifecycle event")
+func rolloutRemovalEmitsSessionRemoved() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let rolloutURL = directory.appendingPathComponent("rollout-synthetic.jsonl")
+    try Data(
+        """
+        {"type":"session_meta","payload":{"id":"removed-session","source":"cli"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    try FileManager.default.removeItem(at: rolloutURL)
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+
+    #expect(events.count == 1)
+    #expect(events.first?.kind.rawValue == "sessionRemoved")
+    #expect(events.first?.sessionID == "removed-session")
+}
+
 private func appendAbort(reason: String, to url: URL) throws {
     let handle = try FileHandle(forWritingTo: url)
     defer { try? handle.close() }

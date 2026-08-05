@@ -10,6 +10,8 @@ struct AmbientReminderView: View {
         Group {
             if model.snapshot.reminderLevel == .confirmation {
                 confirmationCard
+            } else if model.snapshot.reminderLevel == .strong {
+                strongReminder
             } else if model.snapshot.detailsExpanded {
                 detailsCard
             } else {
@@ -17,6 +19,33 @@ struct AmbientReminderView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var strongReminder: some View {
+        HStack(spacing: 14) {
+            HealthTokenPixelCharacter()
+                .frame(width: 82, height: 82)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Codex 还在忙，喝一口吧")
+                    .font(.headline)
+                Text("本次记录约 \(sipMilliliters) mL")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button(action: model.confirmSip) {
+                    Label("喝了一口", systemImage: "cup.and.saucer.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+                .accessibilityLabel("喝了一口，记录约 \(sipMilliliters) 毫升")
+            }
+        }
+        .modifier(ReminderCardStyle(increasedContrast: contrast == .increased))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("强饮水提醒")
     }
 
     private var dropButton: some View {
@@ -100,6 +129,50 @@ struct AmbientReminderView: View {
 
     private var confirmedMilliliters: Int {
         model.snapshot.undoableDrinkRecord?.estimatedMilliliters ?? 0
+    }
+}
+
+private struct HealthTokenPixelCharacter: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color(red: 0.08, green: 0.78, blue: 0.88))
+                .frame(width: 48, height: 44)
+                .offset(x: -8, y: 7)
+            Rectangle()
+                .fill(Color(red: 0.18, green: 0.9, blue: 0.98))
+                .frame(width: 36, height: 10)
+                .offset(x: -8, y: -20)
+            Rectangle()
+                .fill(.black)
+                .frame(width: 6, height: 6)
+                .offset(x: -19, y: -3)
+            Rectangle()
+                .fill(.black)
+                .frame(width: 6, height: 6)
+                .offset(x: -1, y: -3)
+            Rectangle()
+                .fill(.white)
+                .frame(width: 18, height: 5)
+                .offset(x: -10, y: 12)
+            Rectangle()
+                .fill(Color(red: 0.08, green: 0.78, blue: 0.88))
+                .frame(width: 14, height: 9)
+                .offset(x: 23, y: 13)
+            Rectangle()
+                .fill(.white)
+                .frame(width: 22, height: 27)
+                .offset(x: 27, y: 24)
+            Rectangle()
+                .fill(Color.cyan.opacity(0.75))
+                .frame(width: 16, height: 10)
+                .offset(x: 27, y: 29)
+            Rectangle()
+                .stroke(.white, lineWidth: 4)
+                .frame(width: 10, height: 15)
+                .offset(x: 42, y: 22)
+        }
+        .accessibilityLabel("Health Token 像素角色举着水杯")
     }
 }
 

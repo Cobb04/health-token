@@ -38,7 +38,9 @@ final class AmbientReminderPanelController {
         }
 
         let size: NSSize
-        if snapshot.reminderLevel == .confirmation {
+        if snapshot.reminderLevel == .strong {
+            size = NSSize(width: 330, height: 132)
+        } else if snapshot.reminderLevel == .confirmation {
             size = NSSize(width: 292, height: 142)
         } else if snapshot.detailsExpanded {
             size = NSSize(width: 292, height: 224)

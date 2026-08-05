@@ -11,6 +11,8 @@ public final class SystemHydrationClock: HydrationClock {
 }
 
 public final class HydrationEngine {
+    private static let agentSessionStaleInterval: TimeInterval = 5 * 60
+
     public enum Action: Equatable, Sendable {
         case timeAdvanced
         case openReminder
@@ -35,6 +37,12 @@ public final class HydrationEngine {
     private var status: HydrationStatus
     private var agentAwarePresentation = false
     private var undoContext: UndoContext?
+    private var agentSessions: [String: AgentSessionActivity] = [:]
+
+    private struct AgentSessionActivity {
+        var qualifyingToolCount: Int
+        var lastActivityAt: Date
+    }
 
     private struct UndoContext {
         let recordID: UUID
@@ -93,6 +101,7 @@ public final class HydrationEngine {
     @discardableResult
     public func send(_ action: Action) throws -> HydrationSnapshot {
         evaluatedAt = clock.now
+        expireStaleAgentSessions()
         if undoContext?.expiresAt ?? .distantPast <= evaluatedAt {
             undoContext = nil
         }
@@ -157,7 +166,7 @@ public final class HydrationEngine {
                 agentAwarePresentation = false
             }
         case .snooze:
-            guard status == .dueAmbient else { break }
+            guard status.isHydrationDue else { break }
             try persist { nextPersistence in
                 nextPersistence.snoozedUntil = evaluatedAt.addingTimeInterval(15 * 60)
             }
@@ -176,10 +185,13 @@ public final class HydrationEngine {
             try persist { nextPersistence in
                 nextPersistence.settings.noAgentFallbackEnabled = isEnabled
             }
-        case .agentActivity, .agentEvent(_):
+        case .agentActivity:
             if status == .dueAmbient {
                 agentAwarePresentation = true
             }
+        case let .agentEvent(event):
+            processAgentEvent(event)
+            status = evaluatedStatus()
         case let .undoSip(recordID):
             guard let context = activeUndoContext,
                   context.recordID == recordID,
@@ -230,7 +242,7 @@ public final class HydrationEngine {
             return .snoozed
         }
 
-        return .dueAmbient
+        return hasAutonomousToolSignal ? .dueStrong : .dueAmbient
     }
 
     private var reminderLevel: ReminderLevel {
@@ -247,6 +259,62 @@ public final class HydrationEngine {
             return persistence.settings.noAgentFallbackEnabled || agentAwarePresentation
                 ? .ambient
                 : .hidden
+        case .dueStrong:
+            return .strong
+        }
+    }
+
+    private var hasAutonomousToolSignal: Bool {
+        agentSessions.values.contains { $0.qualifyingToolCount >= 3 }
+    }
+
+    private func processAgentEvent(_ event: AgentEvent) {
+        switch event.kind {
+        case .completed, .aborted, .sessionRemoved:
+            agentSessions.removeValue(forKey: event.sessionID)
+            return
+        case .sessionStarted, .promptSubmitted, .attentionChanged:
+            agentSessions[event.sessionID] = AgentSessionActivity(
+                qualifyingToolCount: 0,
+                lastActivityAt: event.timestamp
+            )
+        case .planUpdated:
+            updateAgentSession(event.sessionID, at: event.timestamp) { _ in }
+        case .toolUsed:
+            updateAgentSession(event.sessionID, at: event.timestamp) { activity in
+                if event.toolClassification == .ordinary {
+                    activity.qualifyingToolCount = status.isHydrationDue
+                        ? activity.qualifyingToolCount + 1
+                        : 0
+                } else if event.toolClassification == .userInput {
+                    activity.qualifyingToolCount = 0
+                }
+            }
+        }
+
+        if status.isHydrationDue {
+            agentAwarePresentation = true
+        }
+    }
+
+    private func updateAgentSession(
+        _ sessionID: String,
+        at timestamp: Date,
+        mutation: (inout AgentSessionActivity) -> Void
+    ) {
+        var activity = agentSessions[sessionID] ?? AgentSessionActivity(
+            qualifyingToolCount: 0,
+            lastActivityAt: timestamp
+        )
+        activity.lastActivityAt = timestamp
+        mutation(&activity)
+        agentSessions[sessionID] = activity
+    }
+
+    private func expireStaleAgentSessions() {
+        agentSessions = agentSessions.filter { _, activity in
+            evaluatedAt.timeIntervalSince(activity.lastActivityAt)
+                < Self.agentSessionStaleInterval
         }
     }
 

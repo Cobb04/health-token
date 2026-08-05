@@ -3,17 +3,19 @@ import Foundation
 public enum HydrationStatus: String, Codable, Equatable, Sendable {
     case accumulating
     case dueAmbient
+    case dueStrong
     case snoozed
     case paused
 
     public var isHydrationDue: Bool {
-        self == .dueAmbient || self == .snoozed
+        self == .dueAmbient || self == .dueStrong || self == .snoozed
     }
 }
 
 public enum ReminderLevel: String, Codable, Equatable, Sendable {
     case hidden
     case ambient
+    case strong
     case confirmation
 }
 

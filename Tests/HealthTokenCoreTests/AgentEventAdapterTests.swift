@@ -126,8 +126,8 @@ func subagentHooksNormalize() throws {
 
     #expect(started.kind == .sessionStarted)
     #expect(stopped.kind == .completed)
-    #expect(started.sessionID == "root")
-    #expect(stopped.sessionID == "root")
+    #expect(started.sessionID == "synthetic-subagent")
+    #expect(stopped.sessionID == "synthetic-subagent")
     #expect(started.role == .subagent)
     #expect(stopped.role == .subagent)
 }
@@ -180,11 +180,21 @@ func normalizationEnforcesPrivacyBoundary() throws {
     }
 
     let malformed = Data(#"{"hook_event_name":"PostToolUse"}"#.utf8)
-    let telemetry = Data(
-        #"{"hook_event_name":"PostToolUse","session_id":"root","tool_name":"telemetry_write"}"#.utf8
-    )
+    let excludedToolNames = [
+        "telemetry_write",
+        "metadata_read",
+        "update_metadata",
+        "health_token_event_enqueue"
+    ]
     #expect(AgentEventAdapter.normalizeHook(malformed, observedAt: observedAt) == nil)
-    #expect(AgentEventAdapter.normalizeHook(telemetry, observedAt: observedAt) == nil)
+    for toolName in excludedToolNames {
+        let data = Data(
+            """
+            {"hook_event_name":"PostToolUse","session_id":"root","tool_name":"\(toolName)"}
+            """.utf8
+        )
+        #expect(AgentEventAdapter.normalizeHook(data, observedAt: observedAt) == nil)
+    }
 }
 
 @Test("synthetic rollout aborts normalize without retaining payload data")
