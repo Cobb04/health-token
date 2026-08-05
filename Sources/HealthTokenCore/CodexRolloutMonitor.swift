@@ -7,6 +7,51 @@ public final class CodexRolloutMonitor {
         let parentSessionID: String?
     }
 
+    private struct AttentionCorrelation {
+        private var pendingRequestIDs = Set<String>()
+        private var lastActivityAt: Date?
+
+        mutating func normalize(
+            _ data: Data,
+            sessionID: String,
+            role: AgentRole,
+            parentSessionID: String?,
+            observedAt: Date
+        ) -> AgentEvent? {
+            let previousRequestIDs = pendingRequestIDs
+            let event = AgentEventAdapter.normalizeRolloutLine(
+                data,
+                sessionID: sessionID,
+                role: role,
+                parentSessionID: parentSessionID,
+                observedAt: observedAt,
+                pendingAttentionRequestIDs: &pendingRequestIDs
+            )
+            if pendingRequestIDs != previousRequestIDs {
+                lastActivityAt = pendingRequestIDs.isEmpty ? nil : observedAt
+            }
+            return event
+        }
+
+        mutating func expire(
+            at observedAt: Date,
+            after interval: TimeInterval
+        ) {
+            guard
+                let lastActivityAt,
+                observedAt.timeIntervalSince(lastActivityAt) >= interval
+            else {
+                return
+            }
+            reset()
+        }
+
+        mutating func reset() {
+            pendingRequestIDs.removeAll()
+            lastActivityAt = nil
+        }
+    }
+
     private struct Cursor {
         static let empty = Cursor(
             offset: 0,
@@ -19,6 +64,7 @@ public final class CodexRolloutMonitor {
         var sessionID: String?
         var role: AgentRole
         var parentSessionID: String?
+        var attentionCorrelation = AttentionCorrelation()
         var remainder = Data()
     }
 
@@ -106,6 +152,10 @@ public final class CodexRolloutMonitor {
             if cursor.offset > size {
                 cursor = .empty
             }
+            cursor.attentionCorrelation.expire(
+                at: observedAt,
+                after: activeSessionInterval
+            )
             guard cursor.offset < size else {
                 cursors[rolloutURL] = cursor
                 continue
@@ -135,6 +185,9 @@ public final class CodexRolloutMonitor {
             for line in lines {
                 if let context = sessionContext(from: line) {
                     let isNewSession = cursor.sessionID != context.sessionID
+                    if isNewSession {
+                        cursor.attentionCorrelation.reset()
+                    }
                     cursor.sessionID = context.sessionID
                     cursor.role = context.role
                     cursor.parentSessionID = context.parentSessionID
@@ -147,7 +200,7 @@ public final class CodexRolloutMonitor {
                     continue
                 }
                 guard let sessionID = cursor.sessionID else { continue }
-                if let event = AgentEventAdapter.normalizeRolloutLine(
+                if let event = cursor.attentionCorrelation.normalize(
                     line,
                     sessionID: sessionID,
                     role: cursor.role,

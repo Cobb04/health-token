@@ -40,6 +40,8 @@ public final class HydrationEngine {
     private var agentSessions: [String: AgentSessionActivity] = [:]
 
     private struct AgentSessionActivity {
+        var role: AgentRole
+        var attention: AgentAttention
         var qualifyingToolCount: Int
         var hasActiveSubagentSignal: Bool
         var lastActivityAt: Date
@@ -243,7 +245,9 @@ public final class HydrationEngine {
             return .snoozed
         }
 
-        return hasAutonomousAgentSignal ? .dueStrong : .dueAmbient
+        return hasAttentionRequiredRootSession || !hasAutonomousAgentSignal
+            ? .dueAmbient
+            : .dueStrong
     }
 
     private var reminderLevel: ReminderLevel {
@@ -271,6 +275,12 @@ public final class HydrationEngine {
         }
     }
 
+    private var hasAttentionRequiredRootSession: Bool {
+        agentSessions.values.contains {
+            $0.role == .root && $0.attention == .required
+        }
+    }
+
     private func processAgentEvent(_ event: AgentEvent) {
         switch event.kind {
         case .completed, .aborted, .sessionRemoved:
@@ -278,20 +288,34 @@ public final class HydrationEngine {
             return
         case .sessionStarted:
             agentSessions[event.sessionID] = AgentSessionActivity(
+                role: event.role,
+                attention: .none,
                 qualifyingToolCount: 0,
                 hasActiveSubagentSignal: event.role == .subagent
-                    && status.isHydrationDue,
+                    && status.isHydrationDue
+                    && !hasAttentionRequiredRootSession,
                 lastActivityAt: event.timestamp
             )
-        case .promptSubmitted, .attentionChanged:
-            updateAgentSession(event.sessionID, at: event.timestamp) { activity in
+        case .promptSubmitted:
+            updateAgentSession(event) { activity in
+                activity.attention = .none
                 activity.qualifyingToolCount = 0
             }
+        case .attentionChanged:
+            updateAgentSession(event) { activity in
+                activity.attention = event.attention
+                activity.qualifyingToolCount = 0
+            }
+            if event.role == .root && event.attention == .required {
+                invalidateAutonomousSignals()
+            }
         case .planUpdated:
-            updateAgentSession(event.sessionID, at: event.timestamp) { _ in }
+            updateAgentSession(event) { _ in }
         case .toolUsed:
-            updateAgentSession(event.sessionID, at: event.timestamp) { activity in
-                if event.toolClassification == .ordinary {
+            let canRecordAutonomousWork = !hasAttentionRequiredRootSession
+            updateAgentSession(event) { activity in
+                if event.toolClassification == .ordinary,
+                   canRecordAutonomousWork {
                     activity.qualifyingToolCount = status.isHydrationDue
                         ? activity.qualifyingToolCount + 1
                         : 0
@@ -307,18 +331,27 @@ public final class HydrationEngine {
     }
 
     private func updateAgentSession(
-        _ sessionID: String,
-        at timestamp: Date,
+        _ event: AgentEvent,
         mutation: (inout AgentSessionActivity) -> Void
     ) {
-        var activity = agentSessions[sessionID] ?? AgentSessionActivity(
+        var activity = agentSessions[event.sessionID] ?? AgentSessionActivity(
+            role: event.role,
+            attention: .none,
             qualifyingToolCount: 0,
             hasActiveSubagentSignal: false,
-            lastActivityAt: timestamp
+            lastActivityAt: event.timestamp
         )
-        activity.lastActivityAt = timestamp
+        activity.role = event.role
+        activity.lastActivityAt = event.timestamp
         mutation(&activity)
-        agentSessions[sessionID] = activity
+        agentSessions[event.sessionID] = activity
+    }
+
+    private func invalidateAutonomousSignals() {
+        for sessionID in agentSessions.keys {
+            agentSessions[sessionID]?.qualifyingToolCount = 0
+            agentSessions[sessionID]?.hasActiveSubagentSignal = false
+        }
     }
 
     private func expireStaleAgentSessions() {

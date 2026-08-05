@@ -86,3 +86,50 @@ func eventInboxPreservesLifecycleOrder() throws {
 
     #expect(try CodexEventInbox(directoryURL: directory).drain() == [earlier, later])
 }
+
+@Test("permission and question payloads never enter the persistent inbox")
+func attentionPayloadsAreNotPersisted() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let inbox = CodexEventInbox(directoryURL: directory)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let privateValues = [
+        "synthetic-secret-command",
+        "synthetic-private-question",
+        "synthetic-private-option",
+        "synthetic-private-description"
+    ]
+    let payloads = [
+        Data(
+            #"{"hook_event_name":"PermissionRequest","session_id":"permission-root","tool_name":"Bash","tool_input":{"command":"synthetic-secret-command"}}"#.utf8
+        ),
+        Data(
+            #"{"hook_event_name":"PreToolUse","session_id":"question-root","tool_name":"request_user_input","tool_input":{"questions":[{"question":"synthetic-private-question","options":[{"label":"synthetic-private-option","description":"synthetic-private-description"}]}]}}"#.utf8
+        )
+    ]
+
+    for payload in payloads {
+        let event = try #require(
+            AgentEventAdapter.normalizeHook(payload, observedAt: observedAt)
+        )
+        try inbox.enqueue(event)
+    }
+
+    let storedURLs = try FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+    )
+    #expect(storedURLs.count == 2)
+    for storedURL in storedURLs {
+        let storedText = try String(contentsOf: storedURL, encoding: .utf8)
+        for privateValue in privateValues {
+            #expect(!storedText.contains(privateValue))
+        }
+    }
+
+    let events = try inbox.drain()
+    #expect(events.count == 2)
+    #expect(events.allSatisfy { $0.kind == .attentionChanged })
+    #expect(events.allSatisfy { $0.attention == .required })
+}

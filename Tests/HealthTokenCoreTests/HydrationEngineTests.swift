@@ -854,12 +854,369 @@ func strongReminderUsesExistingDrinkRecordPath() throws {
     #expect(duplicate.records.count == 1)
 }
 
+@Test("root attention immediately collapses strong while preserving hydration context")
+func rootAttentionCollapsesStrongAndPreservesHydration() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let existingRecord = DrinkRecord(
+        id: UUID(),
+        timestamp: setup,
+        sipEstimate: .large,
+        sourceAction: .sipConfirmation
+    )
+    let settings = HydrationSettings()
+    let store = InMemoryHydrationStore(
+        persistence: HydrationPersistence(
+            settings: settings,
+            records: [existingRecord],
+            cycle: HydrationCycle(
+                startedAt: setup,
+                reminderInterval: settings.reminderInterval
+            )
+        )
+    )
+    let clock = TestClock(now: setup.addingTimeInterval(30 * 60))
+    let engine = try HydrationEngine(clock: clock, store: store)
+    _ = try engine.send(.setNoAgentFallbackEnabled(false))
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "autonomous-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    #expect(engine.snapshot.reminderLevel == .strong)
+
+    let collapsed = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+
+    #expect(collapsed.status == .dueAmbient)
+    #expect(collapsed.reminderLevel == .ambient)
+    #expect(collapsed.cycle.startedAt == setup)
+    #expect(collapsed.records == [existingRecord])
+    #expect(collapsed.todayEstimatedMilliliters == 35)
+    #expect(store.persistence?.records == [existingRecord])
+}
+
+@Test("attention leaves an active snooze and its stored hydration data unchanged")
+func rootAttentionPreservesSnooze() throws {
+    let setup = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: setup)
+    let store = InMemoryHydrationStore()
+    let engine = try HydrationEngine(clock: clock, store: store)
+    clock.now.addTimeInterval(30 * 60)
+    let snoozed = try engine.send(.snooze)
+    let savedBeforeAttention = store.persistence
+
+    let attention = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+
+    #expect(attention.status == .snoozed)
+    #expect(attention.reminderLevel == .ambient)
+    #expect(attention.snoozedUntil == snoozed.snoozedUntil)
+    #expect(attention.records.isEmpty)
+    #expect(store.persistence == savedBeforeAttention)
+}
+
+@Test("one interactive root suppresses autonomous work in every session without replay")
+func attentionSuppressesAllSessionsAndRequiresFreshToolStreak() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "autonomous-root"
+    )))
+    #expect(engine.snapshot.reminderLevel == .strong)
+
+    let collapsed = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+    #expect(collapsed.reminderLevel == .ambient)
+
+    for _ in 0..<3 {
+        let suppressed = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "other-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+        #expect(suppressed.reminderLevel == .ambient)
+    }
+
+    let resolved = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    #expect(resolved.reminderLevel == .ambient)
+
+    for expectedLevel in [ReminderLevel.ambient, .ambient, .strong] {
+        let fresh = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "other-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+        #expect(fresh.reminderLevel == expectedLevel)
+    }
+}
+
+@Test("two roots keep global suppression until both requests resolve")
+func attentionResolutionIsAggregatedAcrossRoots() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+
+    for sessionID in ["root-a", "root-b"] {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .attentionChanged,
+            sessionID: sessionID,
+            at: clock.now,
+            attention: .required,
+            tool: .userInput
+        )))
+    }
+    let oneResolved = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "root-a",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "root-c"
+    )))
+    let bothResolved = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "root-b",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+
+    #expect(oneResolved.reminderLevel == .ambient)
+    #expect(bothResolved.reminderLevel == .ambient)
+
+    let newSubagent = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "new-child",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "root-c"
+    )))
+    #expect(newSubagent.reminderLevel == .strong)
+}
+
+@Test("completion abort removal and stale cleanup cannot leave ghost attention")
+func terminalAndStaleEventsClearAttention() throws {
+    for terminalKind in [
+        AgentEvent.Kind.completed,
+        .aborted,
+        .sessionRemoved
+    ] {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+        let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+        clock.now.addTimeInterval(30 * 60)
+        _ = try engine.send(.agentEvent(agentEvent(
+            .attentionChanged,
+            sessionID: "interactive-root",
+            at: clock.now,
+            attention: .required,
+            tool: .userInput
+        )))
+        _ = try engine.send(.agentEvent(agentEvent(
+            terminalKind,
+            sessionID: "interactive-root",
+            at: clock.now
+        )))
+        let fresh = try engine.send(.agentEvent(agentEvent(
+            .sessionStarted,
+            sessionID: "fresh-child",
+            at: clock.now,
+            role: .subagent,
+            parentSessionID: "other-root"
+        )))
+
+        #expect(fresh.reminderLevel == .strong)
+    }
+
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    _ = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "stale-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+    clock.now.addTimeInterval(5 * 60)
+    let staleRemoved = try engine.send(.timeAdvanced)
+    let fresh = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "fresh-child",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "other-root"
+    )))
+
+    #expect(staleRemoved.reminderLevel == .ambient)
+    #expect(fresh.reminderLevel == .strong)
+}
+
+@Test("non-actionable background metadata does not suppress strong")
+func backgroundMetadataDoesNotSuppressStrongReminder() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    _ = try engine.send(.agentEvent(agentEvent(
+        .sessionStarted,
+        sessionID: "child",
+        at: clock.now,
+        role: .subagent,
+        parentSessionID: "root-a"
+    )))
+
+    let metadata = try engine.send(.agentEvent(agentEvent(
+        .planUpdated,
+        sessionID: "background-root",
+        at: clock.now,
+        tool: .plan
+    )))
+
+    #expect(metadata.status == .dueStrong)
+    #expect(metadata.reminderLevel == .strong)
+}
+
+@Test("same-session plan and tool activity cannot resolve attention")
+func sameSessionActivityDoesNotResolveAttention() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "interactive-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    _ = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+
+    let plan = try engine.send(.agentEvent(agentEvent(
+        .planUpdated,
+        sessionID: "interactive-root",
+        at: clock.now,
+        tool: .plan
+    )))
+    var tool = plan
+    for _ in 0..<3 {
+        tool = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "interactive-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    #expect(plan.reminderLevel == .ambient)
+    #expect(tool.reminderLevel == .ambient)
+
+    let resolved = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    #expect(resolved.reminderLevel == .ambient)
+}
+
+@Test("a completed question hook cannot clear another pending request")
+func mixedHookAttentionWaitsForCorrelatedResolution() throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    let hookPayloads = [
+        #"{"hook_event_name":"PermissionRequest","session_id":"interactive-root","tool_name":"Bash","tool_input":{"command":"synthetic private command"}}"#,
+        #"{"hook_event_name":"PreToolUse","session_id":"interactive-root","tool_name":"request_user_input","tool_input":{"questions":["synthetic private question"]}}"#,
+        #"{"hook_event_name":"PostToolUse","session_id":"interactive-root","tool_name":"request_user_input","tool_response":{"answers":["synthetic private answer"]}}"#
+    ]
+    for payload in hookPayloads {
+        let event = try #require(AgentEventAdapter.normalizeHook(
+            Data(payload.utf8),
+            observedAt: clock.now
+        ))
+        _ = try engine.send(.agentEvent(event))
+    }
+
+    var whilePermissionPending = engine.snapshot
+    for _ in 0..<3 {
+        whilePermissionPending = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "other-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+
+    #expect(whilePermissionPending.reminderLevel == .ambient)
+
+    _ = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "interactive-root",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    for expectedLevel in [ReminderLevel.ambient, .ambient, .strong] {
+        let fresh = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "other-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+        #expect(fresh.reminderLevel == expectedLevel)
+    }
+}
+
 private func agentEvent(
     _ kind: AgentEvent.Kind,
     sessionID: String,
     at timestamp: Date,
     role: AgentRole = .root,
     parentSessionID: String? = nil,
+    attention: AgentAttention = .none,
     tool: AgentToolClassification? = nil
 ) -> AgentEvent {
     AgentEvent(
@@ -868,7 +1225,7 @@ private func agentEvent(
         parentSessionID: parentSessionID,
         timestamp: timestamp,
         role: role,
-        attention: .none,
+        attention: attention,
         toolClassification: tool
     )
 }

@@ -80,28 +80,31 @@ func lifecycleHooksNormalize() throws {
 @Test("permission and user-input hooks report attention without answering")
 func attentionHooksNormalizeReadOnly() throws {
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
-    let fixtures: [(String, AgentAttention)] = [
+    let fixtures: [(String, AgentEvent.Kind, AgentAttention)] = [
         (
             #"{"hook_event_name":"PermissionRequest","session_id":"root","tool_name":"Bash","tool_input":{"command":"private command"}}"#,
+            .attentionChanged,
             .required
         ),
         (
             #"{"hook_event_name":"PreToolUse","session_id":"root","tool_name":"request_user_input","tool_input":{"questions":["private question"]}}"#,
+            .attentionChanged,
             .required
         ),
         (
             #"{"hook_event_name":"PostToolUse","session_id":"root","tool_name":"request_user_input","tool_response":{"answers":["private answer"]}}"#,
+            .toolUsed,
             .none
         )
     ]
 
-    for (fixture, expectedAttention) in fixtures {
+    for (fixture, expectedKind, expectedAttention) in fixtures {
         let data = try #require(fixture.data(using: .utf8))
         let event = try #require(
             AgentEventAdapter.normalizeHook(data, observedAt: observedAt)
         )
 
-        #expect(event.kind == .attentionChanged)
+        #expect(event.kind == expectedKind)
         #expect(event.attention == expectedAttention)
         #expect(event.toolClassification == .userInput)
     }
@@ -255,4 +258,57 @@ func rolloutCompletionNormalizes() throws {
     #expect(event.parentSessionID == "synthetic-parent")
     #expect(event.role == .subagent)
     #expect(!encodedText.contains("synthetic private output"))
+}
+
+@Test("local user-input rollout records normalize without content")
+func rolloutUserInputNormalizesWithoutContent() throws {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    var pendingRequestIDs = Set<String>()
+    let request = Data(
+        #"{"type":"event_msg","payload":{"type":"request_user_input","call_id":"synthetic-call","questions":[{"question":"synthetic private question","options":[{"label":"synthetic private option"}]}]}}"#.utf8
+    )
+    let unrelatedOutput = Data(
+        #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"other-call","output":"synthetic unrelated private output"}}"#.utf8
+    )
+    let answer = Data(
+        #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"synthetic-call","output":"synthetic private answer"}}"#.utf8
+    )
+
+    let required = try #require(
+        AgentEventAdapter.normalizeRolloutLine(
+            request,
+            sessionID: "synthetic-root",
+            role: .root,
+            observedAt: observedAt,
+            pendingAttentionRequestIDs: &pendingRequestIDs
+        )
+    )
+    let unrelated = AgentEventAdapter.normalizeRolloutLine(
+        unrelatedOutput,
+        sessionID: "synthetic-root",
+        role: .root,
+        observedAt: observedAt,
+        pendingAttentionRequestIDs: &pendingRequestIDs
+    )
+    let resolved = try #require(
+        AgentEventAdapter.normalizeRolloutLine(
+            answer,
+            sessionID: "synthetic-root",
+            role: .root,
+            observedAt: observedAt,
+            pendingAttentionRequestIDs: &pendingRequestIDs
+        )
+    )
+    let encoded = try JSONEncoder().encode([required, resolved])
+    let encodedText = try #require(String(data: encoded, encoding: .utf8))
+
+    #expect(required.kind == .attentionChanged)
+    #expect(required.attention == .required)
+    #expect(unrelated == nil)
+    #expect(resolved.kind == .attentionChanged)
+    #expect(resolved.attention == .none)
+    #expect(pendingRequestIDs.isEmpty)
+    #expect(!encodedText.contains("synthetic private question"))
+    #expect(!encodedText.contains("synthetic private option"))
+    #expect(!encodedText.contains("synthetic private answer"))
 }

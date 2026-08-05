@@ -275,6 +275,75 @@ func rolloutRemovalEmitsSessionRemoved() throws {
     #expect(events.first?.sessionID == "removed-session")
 }
 
+@Test("rollout attention resolves only after every matching output arrives")
+func rolloutAttentionResolutionIsCorrelated() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    let rolloutURL = directory.appendingPathComponent("rollout-attention.jsonl")
+    try Data(
+        """
+        {"type":"session_meta","payload":{"id":"interactive-root","source":"cli"}}
+        {"type":"event_msg","payload":{"type":"request_user_input","call_id":"question-call","questions":[{"question":"synthetic private question","options":[{"label":"synthetic private option"}]}]}}
+        {"type":"event_msg","payload":{"type":"exec_approval_request","call_id":"permission-call","command":["synthetic-private-command"]}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+
+    let required = try monitor.poll(
+        observedAt: observedAt.addingTimeInterval(1)
+    )
+    #expect(required.count == 2)
+    #expect(required.allSatisfy { $0.kind == .attentionChanged })
+    #expect(required.allSatisfy { $0.attention == .required })
+
+    try appendRolloutLine(
+        #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"other-call","output":"synthetic unrelated private output"}}"#,
+        to: rolloutURL
+    )
+    #expect(
+        try monitor.poll(
+            observedAt: observedAt.addingTimeInterval(2)
+        ).isEmpty
+    )
+
+    try appendRolloutLine(
+        #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"question-call","output":"synthetic private answer"}}"#,
+        to: rolloutURL
+    )
+    #expect(
+        try monitor.poll(
+            observedAt: observedAt.addingTimeInterval(3)
+        ).isEmpty
+    )
+
+    try appendRolloutLine(
+        #"{"type":"event_msg","payload":{"type":"exec_command_begin","call_id":"permission-call","command":["synthetic-private-command"]}}"#,
+        to: rolloutURL
+    )
+    let resolved = try monitor.poll(
+        observedAt: observedAt.addingTimeInterval(4)
+    )
+    #expect(resolved.count == 1)
+    #expect(resolved.first?.kind == .attentionChanged)
+    #expect(resolved.first?.attention == AgentAttention.none)
+    let encodedText = try #require(
+        String(data: JSONEncoder().encode(resolved), encoding: .utf8)
+    )
+    #expect(!encodedText.contains("synthetic private question"))
+    #expect(!encodedText.contains("synthetic private option"))
+    #expect(!encodedText.contains("synthetic private answer"))
+    #expect(!encodedText.contains("synthetic private command"))
+}
+
 private func appendAbort(reason: String, to url: URL) throws {
     let handle = try FileHandle(forWritingTo: url)
     defer { try? handle.close() }
@@ -284,6 +353,13 @@ private func appendAbort(reason: String, to url: URL) throws {
 
     """
     try handle.write(contentsOf: Data(line.utf8))
+}
+
+private func appendRolloutLine(_ line: String, to url: URL) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data((line + "\n").utf8))
 }
 
 private func pollNewRollout(
