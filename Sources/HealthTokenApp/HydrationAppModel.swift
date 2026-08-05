@@ -202,11 +202,7 @@ final class HydrationAppModel: ObservableObject {
         send(.undoSip(recordID))
     }
 
-    func sendForWindowIntegrationTest(_ action: HydrationEngine.Action) {
-        send(action)
-    }
-
-    private func send(_ action: HydrationEngine.Action) {
+    func send(_ action: HydrationEngine.Action) {
         do {
             snapshot = try engine.send(action)
             persistenceError = nil

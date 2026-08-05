@@ -40,6 +40,12 @@ public enum SipEstimate: Int, Codable, CaseIterable, Equatable, Sendable {
 
 public struct HydrationSettings: Codable, Equatable, Sendable {
     public static let defaultReminderInterval: TimeInterval = 30 * 60
+    public static let reminderIntervalOptions: [TimeInterval] = [
+        15 * 60,
+        30 * 60,
+        45 * 60,
+        60 * 60
+    ]
 
     public var reminderInterval: TimeInterval
     public var sipEstimate: SipEstimate

@@ -156,28 +156,6 @@ final class AmbientReminderPanelController {
         render(currentSnapshot)
     }
 
-    var accessibleControlNames: [String] {
-        let sipMilliliters = currentSnapshot.settings.sipEstimate.milliliters
-        if currentSnapshot.reminderLevel == .confirmation,
-           let record = currentSnapshot.undoableDrinkRecord {
-            return [ReminderControlName.undo(
-                sipMilliliters: record.estimatedMilliliters
-            )]
-        }
-        if currentSnapshot.reminderLevel == .strong {
-            return [ReminderControlName.drink(sipMilliliters: sipMilliliters)]
-        }
-        if currentSnapshot.detailsExpanded {
-            return [
-                ReminderControlName.drink(sipMilliliters: sipMilliliters),
-                ReminderControlName.snooze,
-                ReminderControlName.pause,
-                ReminderControlName.settings
-            ]
-        }
-        return []
-    }
-
     private func panelSize(for snapshot: HydrationSnapshot) -> NSSize {
         if snapshot.reminderLevel == .strong {
             return NSSize(width: 330, height: 132)

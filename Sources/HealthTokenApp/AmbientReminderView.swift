@@ -48,6 +48,7 @@ struct AmbientReminderView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
                 .accessibilityLabel(ReminderControlName.drink(sipMilliliters: sipMilliliters))
+                .keyboardShortcut(.defaultAction)
             }
         }
         .modifier(ReminderCardStyle(appearance: appearance))
@@ -109,6 +110,7 @@ struct AmbientReminderView: View {
             .buttonStyle(.borderedProminent)
             .tint(.cyan)
             .accessibilityLabel(ReminderControlName.drink(sipMilliliters: sipMilliliters))
+            .keyboardShortcut(.defaultAction)
 
             Button(action: { intentionally(model.snooze) }) {
                 Text("稍后 · 15 分钟")
@@ -116,6 +118,7 @@ struct AmbientReminderView: View {
             }
             .buttonStyle(.bordered)
             .accessibilityLabel(ReminderControlName.snooze)
+            .keyboardShortcut("s", modifiers: [])
 
             HStack {
                 Button("暂停") {
@@ -123,6 +126,7 @@ struct AmbientReminderView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel(ReminderControlName.pause)
+                .keyboardShortcut("p", modifiers: [])
 
                 Spacer()
 
@@ -149,6 +153,7 @@ struct AmbientReminderView: View {
                 .accessibilityLabel(
                     ReminderControlName.undo(sipMilliliters: confirmedMilliliters)
                 )
+                .keyboardShortcut("z", modifiers: [])
             }
         }
         .modifier(ReminderCardStyle(appearance: appearance))
@@ -174,12 +179,13 @@ struct AmbientReminderView: View {
                 }
             }
             Picker("提醒间隔", selection: reminderInterval) {
-                ForEach(Self.reminderIntervalOptions, id: \.self) { interval in
+                ForEach(HydrationSettings.reminderIntervalOptions, id: \.self) { interval in
                     Text("\(Int(interval / 60)) 分钟").tag(interval)
                 }
             }
         }
         .accessibilityLabel(ReminderControlName.settings)
+        .keyboardShortcut(",", modifiers: [.command])
     }
 
     private var sipEstimate: Binding<SipEstimate> {
@@ -220,12 +226,6 @@ struct AmbientReminderView: View {
         action()
     }
 
-    private static let reminderIntervalOptions: [TimeInterval] = [
-        15 * 60,
-        30 * 60,
-        45 * 60,
-        60 * 60
-    ]
 }
 
 private struct HealthTokenPixelCharacter: View {

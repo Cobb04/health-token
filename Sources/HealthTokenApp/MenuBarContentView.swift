@@ -53,7 +53,7 @@ struct MenuBarContentView: View {
         .accessibilityLabel("每口饮水估算设置")
 
         Picker("提醒间隔", selection: reminderInterval) {
-            ForEach(Self.reminderIntervalOptions, id: \.self) { interval in
+            ForEach(HydrationSettings.reminderIntervalOptions, id: \.self) { interval in
                 Text("\(Int(interval / 60)) 分钟").tag(interval)
             }
         }
@@ -149,10 +149,4 @@ struct MenuBarContentView: View {
         )
     }
 
-    private static let reminderIntervalOptions: [TimeInterval] = [
-        15 * 60,
-        30 * 60,
-        45 * 60,
-        60 * 60
-    ]
 }
