@@ -6,8 +6,27 @@ struct MenuBarContentView: View {
     @ObservedObject var model: HydrationAppModel
 
     var body: some View {
-        Text(statusText)
+        Text(statusPresentation.text)
+            .foregroundStyle(
+                statusPresentation.usesCountdownAccent ? Color.blue : Color.primary
+            )
         Text("今日估算总量：约 \(model.snapshot.todayEstimatedMilliliters) mL")
+
+        Button("我刚喝了一口 · 约 \(sipMilliliters) mL") {
+            model.recordProactiveSip()
+        }
+        .accessibilityLabel(ReminderControlName.drink(sipMilliliters: sipMilliliters))
+
+        Button("喝完一瓶 · \(formattedBottleCapacity)") {
+            model.completeBottle()
+        }
+        .accessibilityLabel("喝完一瓶，校准到下一个 \(formattedBottleCapacity) 节点")
+
+        if let record = model.snapshot.undoableDrinkRecord {
+            Button("撤销刚才的记录 · 约 \(record.estimatedMilliliters) mL") {
+                model.undoDrink(record.id)
+            }
+        }
 
         Divider()
 
@@ -52,6 +71,13 @@ struct MenuBarContentView: View {
         }
         .accessibilityLabel("每口饮水估算设置")
 
+        Picker("水瓶容量", selection: bottleCapacityMilliliters) {
+            ForEach(HydrationSettings.bottleCapacityOptions, id: \.self) { capacity in
+                Text(HydrationVolumeFormatter.bottleCapacity(capacity)).tag(capacity)
+            }
+        }
+        .accessibilityLabel("水瓶容量设置")
+
         Picker("提醒间隔", selection: reminderInterval) {
             ForEach(HydrationSettings.reminderIntervalOptions, id: \.self) { interval in
                 Text("\(Int(interval / 60)) 分钟").tag(interval)
@@ -74,19 +100,11 @@ struct MenuBarContentView: View {
         }
     }
 
-    private var statusText: String {
-        switch model.snapshot.status {
-        case .accumulating:
-            "下一次低干扰提醒正在计时"
-        case .dueAmbient:
-            "低干扰饮水提醒已显示"
-        case .dueStrong:
-            "Codex 持续工作，饮水强提醒已显示"
-        case .snoozed:
-            "强提醒已稍后，饮水仍到期"
-        case .paused:
-            "Health Token 已暂停"
-        }
+    private var statusPresentation: HydrationMenuStatusPresentation {
+        HydrationMenuStatusPresentation(
+            status: model.snapshot.status,
+            remainingTimeUntilReminder: model.snapshot.remainingTimeUntilReminder
+        )
     }
 
     private var sipEstimate: Binding<SipEstimate> {
@@ -96,43 +114,12 @@ struct MenuBarContentView: View {
         )
     }
 
-    private var integrationPresentation: (
-        status: String,
-        image: String,
-        detail: String
-    ) {
-        switch model.integrationHealth {
-        case .connected:
-            (
-                "Codex 观察：已连接",
-                "checkmark.circle.fill",
-                "仅接收会话、角色、注意力和工具分类元数据。"
-            )
-        case .fallbackOnly:
-            if model.snapshot.settings.noAgentFallbackEnabled {
-                (
-                    "Codex 观察：仅低干扰兜底",
-                    "exclamationmark.circle",
-                    model.isCodexObservationEnabled
-                        ? "等待 Codex /hooks 信任确认或首个生命周期事件；饮水到期仍保持 B。"
-                        : "Codex 事件未连接；饮水到期仍只显示低干扰提醒。"
-                )
-            } else {
-                (
-                    "Codex 观察：等待事件",
-                    "exclamationmark.circle",
-                    model.isCodexObservationEnabled
-                        ? "等待 Codex 生命周期事件；收到活动后只显示低干扰提醒。"
-                        : "Codex 事件未连接，且无 Agent 兜底已关闭。"
-                )
-            }
-        case .unavailable:
-            (
-                "Codex 观察：不可用",
-                "xmark.circle",
-                "未发现可用的本地 Codex 会话；可安装 Codex 后再启用。"
-            )
-        }
+    private var integrationPresentation: CodexIntegrationPresentation {
+        CodexIntegrationPresentation(
+            health: model.integrationHealth,
+            isObservationEnabled: model.isCodexObservationEnabled,
+            noAgentFallbackEnabled: model.snapshot.settings.noAgentFallbackEnabled
+        )
     }
 
     private var reminderInterval: Binding<TimeInterval> {
@@ -146,6 +133,23 @@ struct MenuBarContentView: View {
         Binding(
             get: { model.snapshot.settings.noAgentFallbackEnabled },
             set: { model.setNoAgentFallbackEnabled($0) }
+        )
+    }
+
+    private var bottleCapacityMilliliters: Binding<Int> {
+        Binding(
+            get: { model.snapshot.settings.bottleCapacityMilliliters },
+            set: { model.setBottleCapacityMilliliters($0) }
+        )
+    }
+
+    private var sipMilliliters: Int {
+        model.snapshot.settings.sipEstimate.milliliters
+    }
+
+    private var formattedBottleCapacity: String {
+        HydrationVolumeFormatter.bottleCapacity(
+            model.snapshot.settings.bottleCapacityMilliliters
         )
     }
 

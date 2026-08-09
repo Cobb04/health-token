@@ -23,7 +23,7 @@ struct AmbientReminderView: View {
         .id(transitionIdentity)
         .transition(reminderTransition)
         .animation(
-            reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28),
+            .easeOut(duration: transitionPolicy.duration),
             value: transitionIdentity
         )
     }
@@ -137,17 +137,26 @@ struct AmbientReminderView: View {
     }
 
     private var confirmationCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("已记录约 \(confirmedMilliliters) mL", systemImage: "checkmark.circle.fill")
-                .font(.headline)
-                .foregroundStyle(.cyan)
-            Text("今日估算总量：约 \(model.snapshot.todayEstimatedMilliliters) mL")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(confirmationTitle, systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.cyan)
+                Text("今日估算总量：约 \(model.snapshot.todayEstimatedMilliliters) mL")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("长按收起")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.45, maximumDistance: 8) {
+                intentionally(model.dismissConfirmation)
+            }
 
             if let record = model.snapshot.undoableDrinkRecord {
                 Button("撤销刚才的记录") {
-                    intentionally { model.undoSip(record.id) }
+                    intentionally { model.undoDrink(record.id) }
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel(
@@ -156,7 +165,11 @@ struct AmbientReminderView: View {
                 .keyboardShortcut("z", modifiers: [])
             }
         }
-        .modifier(ReminderCardStyle(appearance: appearance))
+        .modifier(ConfirmationCardStyle(appearance: appearance))
+        .accessibilityAction(named: "收起确认") {
+            intentionally(model.dismissConfirmation)
+        }
+        .accessibilityHint(ReminderControlName.dismissConfirmation)
     }
 
     private var sipMilliliters: Int {
@@ -165,6 +178,15 @@ struct AmbientReminderView: View {
 
     private var confirmedMilliliters: Int {
         model.snapshot.undoableDrinkRecord?.estimatedMilliliters ?? 0
+    }
+
+    private var confirmationTitle: String {
+        switch model.snapshot.undoableDrinkRecord?.sourceAction {
+        case .bottleReconciliation:
+            "已补记约 \(confirmedMilliliters) mL"
+        case .sipConfirmation, .proactiveSip, nil:
+            "已记录约 \(confirmedMilliliters) mL"
+        }
     }
 
     private var appearance: ReminderAppearancePolicy {
@@ -215,10 +237,13 @@ struct AmbientReminderView: View {
     }
 
     private var reminderTransition: AnyTransition {
-        let policy = ReminderTransitionPolicy(reduceMotion: reduceMotion)
-        return policy.usesScale
-            ? .scale(scale: 0.96, anchor: .top).combined(with: .opacity)
+        return transitionPolicy.usesScale
+            ? .scale(scale: transitionPolicy.scale, anchor: .top).combined(with: .opacity)
             : .opacity
+    }
+
+    private var transitionPolicy: ReminderTransitionPolicy {
+        ReminderTransitionPolicy(reduceMotion: reduceMotion)
     }
 
     private func intentionally(_ action: () -> Void) {
@@ -282,6 +307,21 @@ private struct ReminderCardStyle: ViewModifier {
             .overlay(
                 RoundedRectangle(cornerRadius: 18)
                     .stroke(.white.opacity(appearance.cardBorderOpacity))
+            )
+            .padding(4)
+    }
+}
+
+private struct ConfirmationCardStyle: ViewModifier {
+    let appearance: ReminderAppearancePolicy
+
+    func body(content: Content) -> some View {
+        content
+            .padding(12)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(.white.opacity(appearance.confirmationBorderOpacity))
             )
             .padding(4)
     }

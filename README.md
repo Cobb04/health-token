@@ -4,7 +4,14 @@ Health Token is a local-first macOS hydration helper. After a 30-minute
 hydration cycle, it shows a quiet water drop beneath the built-in notch or at
 the top center of the active display. Opening the drop lets you record one
 deliberate sip, snooze for 15 minutes, undo a just-created record, and see
-today's estimated total. The menu bar provides pause/resume, 15/25/35 mL sip
+today's estimated total. The menu bar shows the current cycle as a blue numeric
+countdown and always lets you record a proactive sip. You can also select a
+usual bottle capacity and use **喝完一瓶** to add only the difference needed to
+reach the next capacity checkpoint, avoiding double-counting earlier sips.
+Both actions restart the hydration cycle, remain available while paused, and
+share a ten-second undo. The lightweight confirmation can be dismissed with a
+long press without undoing its Drink Record. The menu bar also provides
+pause/resume, 15/25/35 mL sip presets, 500/750/1000/1500/2000 mL bottle
 presets, 15/30/45/60-minute reminder intervals, and a no-Agent fallback toggle.
 When hydration is already due, either a verified Codex Subagent session or
 three qualifying tool calls in one active Codex turn temporarily upgrades the
@@ -55,8 +62,9 @@ The menu bar reports:
 - **Connected** while the complete Health Token hook set is configured and a
   handler has delivered a recent lifecycle event. It falls back if delivery
   stops.
-- **Fallback only** when local Codex sessions are present but lifecycle events
-  are not connected. Hydration due state still uses ambient B behavior.
+- **Waiting to connect** when local Codex sessions are present but lifecycle
+  events are not connected. The menu tells the user to open `/hooks` and allow
+  Health Token; ordinary timed reminders continue when fallback is enabled.
 - **Unavailable** when no supported local Codex installation is detected.
 
 The adapter follows the public [Codex hooks

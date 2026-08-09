@@ -10,13 +10,23 @@ func fileStoreRoundTripsHydrationState() throws {
     let fileURL = directory.appendingPathComponent("hydration.json")
     let store = FileHydrationStore(fileURL: fileURL)
     let expected = HydrationPersistence(
-        settings: HydrationSettings(reminderInterval: 45 * 60, sipEstimate: .large),
+        settings: HydrationSettings(
+            reminderInterval: 45 * 60,
+            sipEstimate: .large,
+            bottleCapacityMilliliters: 750
+        ),
         records: [
             DrinkRecord(
                 id: UUID(),
                 timestamp: Date(timeIntervalSince1970: 1_800_000_000),
                 sipEstimate: .large,
                 sourceAction: .sipConfirmation
+            ),
+            DrinkRecord(
+                id: UUID(),
+                timestamp: Date(timeIntervalSince1970: 1_800_000_100),
+                estimatedMilliliters: 615,
+                sourceAction: .bottleReconciliation
             )
         ],
         cycle: HydrationCycle(
@@ -59,6 +69,7 @@ func invalidPersistedSettingsRecover() throws {
     var settings = try #require(json["settings"] as? [String: Any])
     settings["reminderInterval"] = -60
     settings["sipEstimate"] = 99
+    settings["bottleCapacityMilliliters"] = 0
     settings["noAgentFallbackEnabled"] = "invalid"
     json["settings"] = settings
     var cycle = try #require(json["cycle"] as? [String: Any])
@@ -77,6 +88,7 @@ func invalidPersistedSettingsRecover() throws {
     let recovered = try #require(loaded)
 
     #expect(recovered.settings == HydrationSettings())
+    #expect(recovered.settings.bottleCapacityMilliliters == 1_000)
     #expect(recovered.records == [record])
     #expect(recovered.cycle.startedAt == startedAt)
     #expect(recovered.cycle.reminderInterval == HydrationSettings.defaultReminderInterval)

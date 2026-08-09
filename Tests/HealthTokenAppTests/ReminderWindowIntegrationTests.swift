@@ -43,8 +43,7 @@ func fallbackPlacementIsClampedToVisibleFrame() {
 }
 
 @MainActor
-@Test("one real panel moves across displays without passive focus or transparent hits")
-func realPanelWindowBehavior() throws {
+private func verifyRealPanelWindowBehavior() throws {
     _ = NSApplication.shared
     let clock = WindowTestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
     let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
@@ -110,8 +109,7 @@ func realPanelWindowBehavior() throws {
 }
 
 @MainActor
-@Test("intentional expansion makes the real panel key and enables snooze by keyboard")
-func realPanelKeyboardOutput() throws {
+private func verifyRealPanelKeyboardOutput() throws {
     _ = NSApplication.shared
     let clock = WindowTestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
     let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
@@ -127,7 +125,7 @@ func realPanelKeyboardOutput() throws {
     #expect(!controller.panel.canBecomeKey)
     controller.userDidIntentionallyInteract()
     model.openReminder()
-    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     #expect(controller.panel.canBecomeKey)
     #expect(model.snapshot.detailsExpanded)
     sendKey("s", keyCode: 1, to: controller.panel)
@@ -135,8 +133,7 @@ func realPanelKeyboardOutput() throws {
 }
 
 @MainActor
-@Test("intentional C interaction supports drink and undo by keyboard")
-func strongReminderKeyboardDrinkAndUndo() throws {
+private func verifyStrongReminderKeyboardDrinkAndUndo() throws {
     _ = NSApplication.shared
     let clock = WindowTestClock(now: Date(timeIntervalSince1970: 1_800_000_000))
     let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
@@ -162,7 +159,7 @@ func strongReminderKeyboardDrinkAndUndo() throws {
     #expect(!controller.panel.canBecomeKey)
 
     controller.userDidIntentionallyInteract()
-    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     #expect(controller.panel.canBecomeKey)
     sendKey("\r", keyCode: 36, to: controller.panel)
     #expect(model.snapshot.reminderLevel == .confirmation)
@@ -173,10 +170,31 @@ func strongReminderKeyboardDrinkAndUndo() throws {
     #expect(model.snapshot.reminderLevel == .strong)
 }
 
+@MainActor
+@Suite(.serialized)
+struct ReminderWindowAppKitTests {
+    @Test("one real panel moves across displays without passive focus or transparent hits")
+    func realPanelWindowBehavior() throws {
+        try verifyRealPanelWindowBehavior()
+    }
+
+    @Test("intentional expansion makes the real panel key and enables snooze by keyboard")
+    func realPanelKeyboardOutput() throws {
+        try verifyRealPanelKeyboardOutput()
+    }
+
+    @Test("intentional C interaction supports drink and undo by keyboard")
+    func strongReminderKeyboardDrinkAndUndo() throws {
+        try verifyStrongReminderKeyboardDrinkAndUndo()
+    }
+}
+
 @Test("Reduce Motion uses opacity while standard transitions may scale")
 func reduceMotionTransition() {
     #expect(ReminderTransitionPolicy(reduceMotion: true).usesScale == false)
     #expect(ReminderTransitionPolicy(reduceMotion: false).usesScale == true)
+    #expect(ReminderTransitionPolicy(reduceMotion: false).scale == 0.98)
+    #expect(ReminderTransitionPolicy(reduceMotion: true).duration < 0.2)
 }
 
 @Test("increased contrast removes glow and makes edges opaque")
@@ -208,6 +226,61 @@ func nonColorStateCues() {
         )
         #expect(cue.nonColorCue == expected)
     }
+}
+
+@Test("menu status presents the existing cycle as a blue numeric countdown")
+func hydrationMenuCountdownPresentation() {
+    let accumulating = HydrationMenuStatusPresentation(
+        status: .accumulating,
+        remainingTimeUntilReminder: 12 * 60 + 34
+    )
+    let due = HydrationMenuStatusPresentation(
+        status: .dueAmbient,
+        remainingTimeUntilReminder: 0
+    )
+    let snoozed = HydrationMenuStatusPresentation(
+        status: .snoozed,
+        remainingTimeUntilReminder: 0
+    )
+    let paused = HydrationMenuStatusPresentation(
+        status: .paused,
+        remainingTimeUntilReminder: 0
+    )
+
+    #expect(accumulating.text == "下一次提醒 12:34")
+    #expect(accumulating.usesCountdownAccent)
+    #expect(due.text == "该喝水了")
+    #expect(!due.usesCountdownAccent)
+    #expect(snoozed.text == "已稍后提醒，饮水仍到期")
+    #expect(paused.text == "Health Token 已暂停")
+}
+
+@Test("Codex observation setup states use plain actionable language")
+func codexIntegrationUsesActionableLanguage() {
+    let waiting = CodexIntegrationPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: true,
+        noAgentFallbackEnabled: true
+    )
+    let disabled = CodexIntegrationPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: false,
+        noAgentFallbackEnabled: true
+    )
+    let connected = CodexIntegrationPresentation(
+        health: .connected,
+        isObservationEnabled: true,
+        noAgentFallbackEnabled: true
+    )
+
+    #expect(waiting.status == "Codex 观察：等待连接")
+    #expect(waiting.detail.contains("/hooks"))
+    #expect(waiting.detail.contains("允许 Health Token"))
+    #expect(waiting.detail.contains("普通定时饮水提醒仍会工作"))
+    #expect(!waiting.detail.contains("生命周期"))
+    #expect(!waiting.detail.contains("保持 B"))
+    #expect(disabled.status == "Codex 观察：未启用")
+    #expect(connected.status == "Codex 观察：已连接")
 }
 
 private let notchedDisplay = ReminderDisplayGeometry(
@@ -245,7 +318,7 @@ private func sendKey(_ characters: String, keyCode: UInt16, to panel: NSPanel) {
         isARepeat: false,
         keyCode: keyCode
     )!
-    panel.sendEvent(event)
+    #expect(panel.performKeyEquivalent(with: event))
     RunLoop.current.run(until: Date().addingTimeInterval(0.05))
 }
 

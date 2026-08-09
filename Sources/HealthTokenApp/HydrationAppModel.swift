@@ -135,6 +135,18 @@ final class HydrationAppModel: ObservableObject {
         send(.confirmSip)
     }
 
+    func recordProactiveSip() {
+        send(.recordProactiveSip)
+    }
+
+    func completeBottle() {
+        send(.completeBottle)
+    }
+
+    func dismissConfirmation() {
+        send(.dismissConfirmation)
+    }
+
     func enableCodexObservation() {
         guard FileManager.default.isExecutableFile(atPath: Self.hookHelperURL.path) else {
             configurationError = "未找到 Health Token 的 Codex 观察组件。"
@@ -190,6 +202,10 @@ final class HydrationAppModel: ObservableObject {
         send(.setSipEstimate(estimate))
     }
 
+    func setBottleCapacityMilliliters(_ milliliters: Int) {
+        send(.setBottleCapacityMilliliters(milliliters))
+    }
+
     func setReminderInterval(_ interval: TimeInterval) {
         send(.setReminderInterval(interval))
     }
@@ -198,8 +214,8 @@ final class HydrationAppModel: ObservableObject {
         send(.setNoAgentFallbackEnabled(isEnabled))
     }
 
-    func undoSip(_ recordID: UUID) {
-        send(.undoSip(recordID))
+    func undoDrink(_ recordID: UUID) {
+        send(.undoDrink(recordID))
     }
 
     func send(_ action: HydrationEngine.Action) {
