@@ -42,6 +42,13 @@ struct CodexIntegrationPresentation {
         hasObservedEvent: Bool,
         noAgentFallbackEnabled: Bool
     ) {
+        if health == .unavailable {
+            status = "Codex 观察：不可用"
+            image = "xmark.circle"
+            detail = "没有发现可用的本地 Codex；安装或启动 Codex 后可以再试。"
+            return
+        }
+
         guard isObservationEnabled else {
             status = "Codex 观察：未启用"
             image = "circle"
@@ -69,6 +76,7 @@ struct CodexIntegrationPresentation {
                 ? "在 Codex 中输入 /hooks，并允许 Health Token。连接前，普通定时饮水提醒仍会工作。"
                 : "在 Codex 中输入 /hooks，并允许 Health Token。连接前不会显示计时提醒。"
         case .unavailable:
+            assertionFailure("Unavailable integrations return before enabled-state handling")
             status = "Codex 观察：不可用"
             image = "xmark.circle"
             detail = "没有发现可用的本地 Codex；安装或启动 Codex 后可以再试。"

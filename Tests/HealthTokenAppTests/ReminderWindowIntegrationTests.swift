@@ -283,7 +283,7 @@ func codexIntegrationUsesActionableLanguage() {
     )
     let unavailable = CodexIntegrationPresentation(
         health: .unavailable,
-        isObservationEnabled: true,
+        isObservationEnabled: false,
         hasObservedEvent: false,
         noAgentFallbackEnabled: true
     )
