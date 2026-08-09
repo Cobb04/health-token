@@ -260,27 +260,61 @@ func codexIntegrationUsesActionableLanguage() {
     let waiting = CodexIntegrationPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
+        hasObservedEvent: false,
+        noAgentFallbackEnabled: true
+    )
+    let fallback = CodexIntegrationPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: true,
+        hasObservedEvent: true,
         noAgentFallbackEnabled: true
     )
     let disabled = CodexIntegrationPresentation(
         health: .fallbackOnly,
         isObservationEnabled: false,
+        hasObservedEvent: false,
         noAgentFallbackEnabled: true
     )
     let connected = CodexIntegrationPresentation(
         health: .connected,
         isObservationEnabled: true,
+        hasObservedEvent: true,
+        noAgentFallbackEnabled: true
+    )
+    let unavailable = CodexIntegrationPresentation(
+        health: .unavailable,
+        isObservationEnabled: true,
+        hasObservedEvent: false,
         noAgentFallbackEnabled: true
     )
 
-    #expect(waiting.status == "Codex 观察：等待连接")
+    #expect(waiting.status == "Codex 观察：等待首次事件")
     #expect(waiting.detail.contains("/hooks"))
     #expect(waiting.detail.contains("允许 Health Token"))
     #expect(waiting.detail.contains("普通定时饮水提醒仍会工作"))
     #expect(!waiting.detail.contains("生命周期"))
     #expect(!waiting.detail.contains("保持 B"))
     #expect(disabled.status == "Codex 观察：未启用")
+    #expect(fallback.status == "Codex 观察：仅低干扰兜底")
     #expect(connected.status == "Codex 观察：已连接")
+    #expect(unavailable.status == "Codex 观察：不可用")
+    let distinctStatuses = Set([
+        waiting.status,
+        fallback.status,
+        disabled.status,
+        connected.status,
+        unavailable.status
+    ])
+    #expect(distinctStatuses.count == 5)
+}
+
+@Test("Custom bottle capacities accept only integer milliliters in the supported range")
+func customBottleCapacityValidation() {
+    #expect(BottleCapacityInput.parse(" 600 ") == 600)
+    #expect(BottleCapacityInput.parse("1200") == 1_200)
+    #expect(BottleCapacityInput.parse("99") == nil)
+    #expect(BottleCapacityInput.parse("5001") == nil)
+    #expect(BottleCapacityInput.parse("1.2 L") == nil)
 }
 
 private let notchedDisplay = ReminderDisplayGeometry(

@@ -149,11 +149,6 @@ struct AmbientReminderView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
-            .contentShape(Rectangle())
-            .onLongPressGesture(minimumDuration: 0.45, maximumDistance: 8) {
-                intentionally(model.dismissConfirmation)
-            }
-
             if let record = model.snapshot.undoableDrinkRecord {
                 Button("撤销刚才的记录") {
                     intentionally { model.undoDrink(record.id) }
@@ -166,6 +161,10 @@ struct AmbientReminderView: View {
             }
         }
         .modifier(ConfirmationCardStyle(appearance: appearance))
+        .contentShape(RoundedRectangle(cornerRadius: 18))
+        .onLongPressGesture(minimumDuration: 0.45, maximumDistance: 8) {
+            intentionally(model.dismissConfirmation)
+        }
         .accessibilityAction(named: "收起确认") {
             intentionally(model.dismissConfirmation)
         }

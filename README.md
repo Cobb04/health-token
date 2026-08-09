@@ -57,14 +57,23 @@ enabling, open `/hooks` in Codex and trust the Health Token command. Disabling
 observation removes only handlers whose command exactly matches Health Token's
 bundled helper.
 
+The menu bar also supports proactive one-sip records and bottle checkpoint
+reconciliation. Choose a common bottle preset or enter any whole-milliliter
+capacity from 100–5000 mL. Completing a bottle adjusts today's estimate to the
+next capacity checkpoint instead of adding a second full bottle on top of sips
+already recorded.
+
 The menu bar reports:
 
+- **Disabled** when Health Token's hook entries are not configured.
+- **Waiting for first event** after observation is enabled but before a trusted
+  hook or rollout event is received.
 - **Connected** while the complete Health Token hook set is configured and a
   handler has delivered a recent lifecycle event. It falls back if delivery
   stops.
-- **Waiting to connect** when local Codex sessions are present but lifecycle
-  events are not connected. The menu tells the user to open `/hooks` and allow
-  Health Token; ordinary timed reminders continue when fallback is enabled.
+- **Fallback only** after an event has been observed but fresh trusted hook
+  delivery is unavailable. Ordinary timed reminders continue when fallback is
+  enabled.
 - **Unavailable** when no supported local Codex installation is detected.
 
 The adapter follows the public [Codex hooks

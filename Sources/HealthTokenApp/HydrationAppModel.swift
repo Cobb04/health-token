@@ -9,6 +9,7 @@ final class HydrationAppModel: ObservableObject {
     @Published private(set) var integrationHealth: CodexIntegrationHealth
     @Published private(set) var integrationError: String?
     @Published private(set) var isCodexObservationEnabled: Bool
+    @Published private(set) var hasObservedCodexEvent = false
 
     private let engine: HydrationEngine
     private let hookInstaller: CodexHookInstaller
@@ -94,10 +95,14 @@ final class HydrationAppModel: ObservableObject {
             let hookEvents = isCodexObservationEnabled ? drainedHookEvents : []
             if !hookEvents.isEmpty {
                 lastHookEventObservedAt = Date()
+                hasObservedCodexEvent = true
             }
             let rolloutEvents = try isCodexObservationEnabled
                 ? rolloutMonitor.poll(observedAt: Date())
                 : []
+            if !rolloutEvents.isEmpty {
+                hasObservedCodexEvent = true
+            }
             let events = (hookEvents + rolloutEvents)
                 .enumerated()
                 .sorted { left, right in
@@ -175,6 +180,7 @@ final class HydrationAppModel: ObservableObject {
         do {
             try operation()
             lastHookEventObservedAt = nil
+            hasObservedCodexEvent = false
             rolloutMonitor.reset()
             configurationError = nil
         } catch {

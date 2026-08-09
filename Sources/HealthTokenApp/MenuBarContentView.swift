@@ -72,11 +72,15 @@ struct MenuBarContentView: View {
         .accessibilityLabel("每口饮水估算设置")
 
         Picker("水瓶容量", selection: bottleCapacityMilliliters) {
-            ForEach(HydrationSettings.bottleCapacityOptions, id: \.self) { capacity in
+            ForEach(bottleCapacityOptions, id: \.self) { capacity in
                 Text(HydrationVolumeFormatter.bottleCapacity(capacity)).tag(capacity)
             }
         }
         .accessibilityLabel("水瓶容量设置")
+
+        Button("自定义水瓶容量…") {
+            promptForBottleCapacity()
+        }
 
         Picker("提醒间隔", selection: reminderInterval) {
             ForEach(HydrationSettings.reminderIntervalOptions, id: \.self) { interval in
@@ -118,6 +122,7 @@ struct MenuBarContentView: View {
         CodexIntegrationPresentation(
             health: model.integrationHealth,
             isObservationEnabled: model.isCodexObservationEnabled,
+            hasObservedEvent: model.hasObservedCodexEvent,
             noAgentFallbackEnabled: model.snapshot.settings.noAgentFallbackEnabled
         )
     }
@@ -151,6 +156,38 @@ struct MenuBarContentView: View {
         HydrationVolumeFormatter.bottleCapacity(
             model.snapshot.settings.bottleCapacityMilliliters
         )
+    }
+
+    private var bottleCapacityOptions: [Int] {
+        Array(
+            Set(
+                HydrationSettings.bottleCapacityOptions
+                    + [model.snapshot.settings.bottleCapacityMilliliters]
+            )
+        ).sorted()
+    }
+
+    private func promptForBottleCapacity() {
+        let field = NSTextField(string: String(model.snapshot.settings.bottleCapacityMilliliters))
+        field.placeholderString = "例如 600"
+
+        let alert = NSAlert()
+        alert.messageText = "自定义水瓶容量"
+        alert.informativeText = "请输入 100–5000 mL。"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let capacity = BottleCapacityInput.parse(field.stringValue) else {
+            let error = NSAlert()
+            error.messageText = "容量无效"
+            error.informativeText = "请输入 100–5000 之间的整数毫升数。"
+            error.runModal()
+            return
+        }
+        model.setBottleCapacityMilliliters(capacity)
     }
 
 }
