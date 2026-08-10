@@ -10,6 +10,11 @@ struct HealthTokenApp: App {
         MenuBarExtra("Health Token", systemImage: "drop.fill") {
             MenuBarContentView(model: appDelegate.model)
         }
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            HealthTokenSettingsView(model: appDelegate.model)
+        }
     }
 }
 

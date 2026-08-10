@@ -10,7 +10,7 @@ struct HydrationMenuStatusPresentation {
         case .accumulating:
             let remainingSeconds = Int(ceil(max(0, remainingTimeUntilReminder)))
             text = String(
-                format: "下一次提醒 %02d:%02d",
+                format: "%02d:%02d",
                 remainingSeconds / 60,
                 remainingSeconds % 60
             )
@@ -19,13 +19,13 @@ struct HydrationMenuStatusPresentation {
             text = "该喝水了"
             usesCountdownAccent = false
         case .dueStrong:
-            text = "Codex 还在忙，该喝水了"
+            text = "Codex 忙碌中"
             usesCountdownAccent = false
         case .snoozed:
-            text = "已稍后提醒，饮水仍到期"
+            text = "已稍后"
             usesCountdownAccent = false
         case .paused:
-            text = "Health Token 已暂停"
+            text = "已暂停"
             usesCountdownAccent = false
         }
     }

@@ -238,6 +238,10 @@ func hydrationMenuCountdownPresentation() {
         status: .dueAmbient,
         remainingTimeUntilReminder: 0
     )
+    let strong = HydrationMenuStatusPresentation(
+        status: .dueStrong,
+        remainingTimeUntilReminder: 0
+    )
     let snoozed = HydrationMenuStatusPresentation(
         status: .snoozed,
         remainingTimeUntilReminder: 0
@@ -247,12 +251,13 @@ func hydrationMenuCountdownPresentation() {
         remainingTimeUntilReminder: 0
     )
 
-    #expect(accumulating.text == "下一次提醒 12:34")
+    #expect(accumulating.text == "12:34")
     #expect(accumulating.usesCountdownAccent)
     #expect(due.text == "该喝水了")
     #expect(!due.usesCountdownAccent)
-    #expect(snoozed.text == "已稍后提醒，饮水仍到期")
-    #expect(paused.text == "Health Token 已暂停")
+    #expect(strong.text == "Codex 忙碌中")
+    #expect(snoozed.text == "已稍后")
+    #expect(paused.text == "已暂停")
 }
 
 @Test("Codex observation setup states use plain actionable language")

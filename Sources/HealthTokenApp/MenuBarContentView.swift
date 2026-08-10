@@ -6,145 +6,207 @@ struct MenuBarContentView: View {
     @ObservedObject var model: HydrationAppModel
 
     var body: some View {
-        Text(statusPresentation.text)
-            .foregroundStyle(
-                statusPresentation.usesCountdownAccent ? Color.blue : Color.primary
-            )
-        Text("今日估算总量：约 \(model.snapshot.todayEstimatedMilliliters) mL")
+        VStack(spacing: 0) {
+            header
 
-        Button("我刚喝了一口 · 约 \(sipMilliliters) mL") {
-            model.recordProactiveSip()
-        }
-        .accessibilityLabel(ReminderControlName.drink(sipMilliliters: sipMilliliters))
-
-        Button("喝完一瓶 · \(formattedBottleCapacity)") {
-            model.completeBottle()
-        }
-        .accessibilityLabel("喝完一瓶，校准到下一个 \(formattedBottleCapacity) 节点")
-
-        if let record = model.snapshot.undoableDrinkRecord {
-            Button("撤销刚才的记录 · 约 \(record.estimatedMilliliters) mL") {
-                model.undoDrink(record.id)
+            if codexNeedsAttention {
+                codexAttentionButton
+                    .padding(.top, 10)
             }
-        }
 
-        Divider()
+            proactiveSipButton
+                .padding(.top, 13)
 
-        Button(model.snapshot.status == .paused ? "恢复 Health Token" : "暂停 Health Token") {
-            model.setPaused(model.snapshot.status != .paused)
-        }
-        .accessibilityLabel(
-            model.snapshot.status == .paused ? "恢复 Health Token" : "暂停 Health Token"
-        )
+            contextRow
+                .padding(.top, 9)
 
-        Divider()
-
-        Label(
-            integrationPresentation.status,
-            systemImage: integrationPresentation.image
-        )
-        Text(integrationPresentation.detail)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-        if model.isCodexObservationEnabled {
-            Button("停用 Codex 观察") {
-                model.disableCodexObservation()
+            if let persistenceError = model.persistenceError {
+                Text(persistenceError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
             }
-        } else {
-            Button("启用 Codex 观察") {
-                model.enableCodexObservation()
-            }
-        }
 
-        if let integrationError = model.integrationError {
-            Text(integrationError)
-                .font(.caption)
-        }
-
-        Divider()
-
-        Picker("每口估算", selection: sipEstimate) {
-            ForEach(SipEstimate.allCases, id: \.self) { estimate in
-                Text("约 \(estimate.milliliters) mL").tag(estimate)
-            }
-        }
-        .accessibilityLabel("每口饮水估算设置")
-
-        Picker("水瓶容量", selection: bottleCapacityMilliliters) {
-            ForEach(bottleCapacityOptions, id: \.self) { capacity in
-                Text(HydrationVolumeFormatter.bottleCapacity(capacity)).tag(capacity)
-            }
-        }
-        .accessibilityLabel("水瓶容量设置")
-
-        Button("自定义水瓶容量…") {
-            promptForBottleCapacity()
-        }
-
-        Picker("提醒间隔", selection: reminderInterval) {
-            ForEach(HydrationSettings.reminderIntervalOptions, id: \.self) { interval in
-                Text("\(Int(interval / 60)) 分钟").tag(interval)
-            }
-        }
-        .accessibilityLabel("饮水提醒间隔设置")
-
-        Toggle("无 Agent 时显示低干扰提醒", isOn: noAgentFallbackEnabled)
-            .accessibilityLabel("无 Agent 时显示低干扰提醒")
-
-        if let persistenceError = model.persistenceError {
             Divider()
-            Text(persistenceError)
-        }
+                .padding(.top, 7)
 
-        Divider()
-
-        Button("退出 Health Token") {
-            NSApplication.shared.terminate(nil)
+            toolbar
+                .padding(.top, 7)
         }
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 11)
+        .frame(width: 264)
+        .fixedSize(horizontal: true, vertical: true)
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(statusPresentation.text)
+                .font(.system(size: 25, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(
+                    statusPresentation.usesCountdownAccent ? Color.accentColor : Color.primary
+                )
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            Spacer(minLength: 4)
+
+            Text("今日 \(model.snapshot.todayEstimatedMilliliters) mL")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var proactiveSipButton: some View {
+        Button {
+            model.recordProactiveSip()
+        } label: {
+            HStack(spacing: 12) {
+                Text("＋ 一口")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+                Text("记录 \(sipMilliliters) mL")
+                    .font(.system(size: 10.5, weight: .regular))
+                    .opacity(0.76)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(CompactPrimaryButtonStyle())
+        .accessibilityLabel(ReminderControlName.drink(sipMilliliters: sipMilliliters))
+    }
+
+    @ViewBuilder
+    private var contextRow: some View {
+        HStack(spacing: 8) {
+            if let record = model.snapshot.undoableDrinkRecord {
+                Text("已记录 ＋\(record.estimatedMilliliters) mL")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+
+                Spacer(minLength: 0)
+
+                Button {
+                    model.undoDrink(record.id)
+                } label: {
+                    Label("撤销", systemImage: "arrow.uturn.backward")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(CompactTextButtonStyle())
+                .accessibilityLabel("撤销刚才的饮水记录")
+            } else {
+                Text("cost your token, not health.")
+                    .font(.custom("Iowan Old Style", size: 12))
+                    .tracking(-0.14)
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Button {
+                    model.completeBottle()
+                } label: {
+                    Text("🥛")
+                        .font(.system(size: 15))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(CompactIconButtonStyle())
+                .help("喝完一瓶 · \(formattedBottleCapacity)")
+                .accessibilityLabel("喝完一瓶")
+                .accessibilityHint("校准到下一个 \(formattedBottleCapacity) 节点")
+            }
+        }
+        .frame(minHeight: 24)
+    }
+
+    @ViewBuilder
+    private var codexAttentionButton: some View {
+        if #available(macOS 14.0, *) {
+            SettingsLink {
+                codexAttentionLabelView
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button(action: openSettings) {
+                codexAttentionLabelView
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var codexAttentionLabelView: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "exclamationmark.circle")
+            Text(codexAttentionLabel)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 30)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityLabel(codexAttentionLabel)
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 4) {
+            Button {
+                model.setPaused(model.snapshot.status != .paused)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: model.snapshot.status == .paused ? "play.fill" : "pause.fill")
+                        .frame(width: 14, height: 14)
+                    Text(model.snapshot.status == .paused ? "恢复" : "暂停")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 7)
+                .frame(height: 25)
+            }
+            .buttonStyle(CompactToolbarButtonStyle())
+            .accessibilityLabel(
+                model.snapshot.status == .paused ? "恢复 Health Token" : "暂停 Health Token"
+            )
+
+            Spacer(minLength: 0)
+
+            settingsButton
+        }
+    }
+
+    @ViewBuilder
+    private var settingsButton: some View {
+        if #available(macOS 14.0, *) {
+            SettingsLink {
+                settingsButtonLabel
+            }
+            .buttonStyle(CompactToolbarButtonStyle())
+        } else {
+            Button(action: openSettings) {
+                settingsButtonLabel
+            }
+            .buttonStyle(CompactToolbarButtonStyle())
+        }
+    }
+
+    private var settingsButtonLabel: some View {
+        Image(systemName: "gearshape")
+            .font(.system(size: 14, weight: .semibold))
+            .frame(width: 28, height: 25)
+            .contentShape(Rectangle())
+            .accessibilityLabel("设置")
     }
 
     private var statusPresentation: HydrationMenuStatusPresentation {
         HydrationMenuStatusPresentation(
             status: model.snapshot.status,
             remainingTimeUntilReminder: model.snapshot.remainingTimeUntilReminder
-        )
-    }
-
-    private var sipEstimate: Binding<SipEstimate> {
-        Binding(
-            get: { model.snapshot.settings.sipEstimate },
-            set: { model.setSipEstimate($0) }
-        )
-    }
-
-    private var integrationPresentation: CodexIntegrationPresentation {
-        CodexIntegrationPresentation(
-            health: model.integrationHealth,
-            isObservationEnabled: model.isCodexObservationEnabled,
-            hasObservedEvent: model.hasObservedCodexEvent,
-            noAgentFallbackEnabled: model.snapshot.settings.noAgentFallbackEnabled
-        )
-    }
-
-    private var reminderInterval: Binding<TimeInterval> {
-        Binding(
-            get: { model.snapshot.settings.reminderInterval },
-            set: { model.setReminderInterval($0) }
-        )
-    }
-
-    private var noAgentFallbackEnabled: Binding<Bool> {
-        Binding(
-            get: { model.snapshot.settings.noAgentFallbackEnabled },
-            set: { model.setNoAgentFallbackEnabled($0) }
-        )
-    }
-
-    private var bottleCapacityMilliliters: Binding<Int> {
-        Binding(
-            get: { model.snapshot.settings.bottleCapacityMilliliters },
-            set: { model.setBottleCapacityMilliliters($0) }
         )
     }
 
@@ -158,36 +220,76 @@ struct MenuBarContentView: View {
         )
     }
 
-    private var bottleCapacityOptions: [Int] {
-        Array(
-            Set(
-                HydrationSettings.bottleCapacityOptions
-                    + [model.snapshot.settings.bottleCapacityMilliliters]
-            )
-        ).sorted()
+    private var codexNeedsAttention: Bool {
+        !model.isCodexObservationEnabled
+            || model.integrationHealth != .connected
+            || model.integrationError != nil
     }
 
-    private func promptForBottleCapacity() {
-        let field = NSTextField(string: String(model.snapshot.settings.bottleCapacityMilliliters))
-        field.placeholderString = "例如 600"
-
-        let alert = NSAlert()
-        alert.messageText = "自定义水瓶容量"
-        alert.informativeText = "请输入 100–5000 mL。"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
-
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        guard let capacity = BottleCapacityInput.parse(field.stringValue) else {
-            let error = NSAlert()
-            error.messageText = "容量无效"
-            error.informativeText = "请输入 100–5000 之间的整数毫升数。"
-            error.runModal()
-            return
+    private var codexAttentionLabel: String {
+        if model.integrationHealth == .unavailable {
+            return "Codex 观察不可用"
         }
-        model.setBottleCapacityMilliliters(capacity)
+        if !model.isCodexObservationEnabled {
+            return "启用 Codex 观察"
+        }
+        return "Codex 需连接"
     }
 
+    private func openSettings() {
+        NSApplication.shared.sendAction(
+            Selector(("showSettingsWindow:")),
+            to: nil,
+            from: nil
+        )
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+}
+
+private struct CompactPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .background(Color.accentColor)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .shadow(color: Color.accentColor.opacity(0.2), radius: 4, y: 2)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+    }
+}
+
+private struct CompactTextButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 3)
+            .background(configuration.isPressed ? Color.accentColor.opacity(0.1) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+private struct CompactIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                configuration.isPressed
+                    ? Color.accentColor.opacity(0.18)
+                    : Color.accentColor.opacity(0.1)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .opacity(configuration.isPressed ? 0.82 : 1)
+    }
+}
+
+private struct CompactToolbarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.secondary)
+            .background(configuration.isPressed ? Color.secondary.opacity(0.1) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
 }
