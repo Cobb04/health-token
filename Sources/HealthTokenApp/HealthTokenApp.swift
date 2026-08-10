@@ -12,9 +12,10 @@ struct HealthTokenApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Settings {
+        Window("Health Token 设置", id: HealthTokenSettingsWindow.id) {
             HealthTokenSettingsView(model: appDelegate.model)
         }
+        .windowResizability(.contentSize)
     }
 }
 

@@ -322,6 +322,20 @@ func customBottleCapacityValidation() {
     #expect(BottleCapacityInput.parse("1.2 L") == nil)
 }
 
+@MainActor
+@Test("settings entry activates the accessory app before opening its single window")
+func settingsEntryMakesTheSettingsWindowVisible() {
+    var actions: [String] = []
+    let presentation = SettingsWindowPresentation(
+        activateApplication: { actions.append("activate") },
+        openWindow: { actions.append("open") }
+    )
+
+    presentation.present()
+
+    #expect(actions == ["activate", "open"])
+}
+
 private let notchedDisplay = ReminderDisplayGeometry(
     frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
     visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),

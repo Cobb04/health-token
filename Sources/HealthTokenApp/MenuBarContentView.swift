@@ -3,6 +3,7 @@ import HealthTokenCore
 import SwiftUI
 
 struct MenuBarContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var model: HydrationAppModel
 
     var body: some View {
@@ -123,19 +124,11 @@ struct MenuBarContentView: View {
         .frame(minHeight: 24)
     }
 
-    @ViewBuilder
     private var codexAttentionButton: some View {
-        if #available(macOS 14.0, *) {
-            SettingsLink {
-                codexAttentionLabelView
-            }
-            .buttonStyle(.plain)
-        } else {
-            Button(action: openSettings) {
-                codexAttentionLabelView
-            }
-            .buttonStyle(.plain)
+        Button(action: presentSettings) {
+            codexAttentionLabelView
         }
+        .buttonStyle(.plain)
     }
 
     private var codexAttentionLabelView: some View {
@@ -180,19 +173,11 @@ struct MenuBarContentView: View {
         }
     }
 
-    @ViewBuilder
     private var settingsButton: some View {
-        if #available(macOS 14.0, *) {
-            SettingsLink {
-                settingsButtonLabel
-            }
-            .buttonStyle(CompactToolbarButtonStyle())
-        } else {
-            Button(action: openSettings) {
-                settingsButtonLabel
-            }
-            .buttonStyle(CompactToolbarButtonStyle())
+        Button(action: presentSettings) {
+            settingsButtonLabel
         }
+        .buttonStyle(CompactToolbarButtonStyle())
     }
 
     private var settingsButtonLabel: some View {
@@ -236,13 +221,20 @@ struct MenuBarContentView: View {
         return "Codex 需连接"
     }
 
-    private func openSettings() {
-        NSApplication.shared.sendAction(
-            Selector(("showSettingsWindow:")),
-            to: nil,
-            from: nil
+    private func presentSettings() {
+        let presentation = SettingsWindowPresentation(
+            activateApplication: activateApplication,
+            openWindow: { openWindow(id: HealthTokenSettingsWindow.id) }
         )
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        presentation.present()
+    }
+
+    private func activateApplication() {
+        if #available(macOS 14.0, *) {
+            NSApplication.shared.activate()
+        } else {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
     }
 }
 
