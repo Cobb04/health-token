@@ -97,6 +97,46 @@ func startupNeverReplaysHistoricalAutonomousWork() throws {
     )
 }
 
+@Test("steady-state Codex Desktop tool calls emit privacy-safe activity")
+func steadyStateDesktopToolCallsEmitActivity() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutURL = directory.appendingPathComponent("rollout-desktop.jsonl")
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:59:20Z","type":"session_meta","payload":{"id":"desktop-root","source":"app-server","cwd":"/synthetic/private/code"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    try appendRolloutLine(
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"live-call","input":"synthetic private command"}}"#,
+        to: rolloutURL
+    )
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+    let event = try #require(events.first)
+    let encodedText = try #require(
+        String(data: JSONEncoder().encode(event), encoding: .utf8)
+    )
+
+    #expect(events.count == 1)
+    #expect(event.kind == .toolUsed)
+    #expect(event.toolClassification == .ordinary)
+    #expect(!encodedText.contains("synthetic private command"))
+    #expect(!encodedText.contains("live-call"))
+}
+
 @Test("startup rejects stale resolved terminal malformed partial oversized and out-of-order attention")
 func startupAttentionEvidenceFailsClosed() throws {
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)

@@ -18,7 +18,7 @@ final class HydrationAppModel: ObservableObject {
     private let hookCommand: String
     private var configurationError: String?
     private var inboxError: String?
-    private var lastHookEventObservedAt: Date?
+    private var observationActivity = CodexObservationActivity()
 
     private let connectionFreshnessInterval: TimeInterval = 2 * 60
 
@@ -87,20 +87,22 @@ final class HydrationAppModel: ObservableObject {
     }
 
     func refresh() {
+        let observedAt = Date()
         do {
             isCodexObservationEnabled = hookInstaller.isInstalled(
                 command: hookCommand
             )
             let drainedHookEvents = try eventInbox.drain()
             let hookEvents = isCodexObservationEnabled ? drainedHookEvents : []
-            if !hookEvents.isEmpty {
-                lastHookEventObservedAt = Date()
-                hasObservedCodexEvent = true
-            }
             let rolloutEvents = try isCodexObservationEnabled
-                ? rolloutMonitor.poll(observedAt: Date())
+                ? rolloutMonitor.poll(observedAt: observedAt)
                 : []
-            if !rolloutEvents.isEmpty {
+            observationActivity.record(
+                hookEventCount: hookEvents.count,
+                rolloutEventCount: rolloutEvents.count,
+                observedAt: observedAt
+            )
+            if !hookEvents.isEmpty || !rolloutEvents.isEmpty {
                 hasObservedCodexEvent = true
             }
             let events = (hookEvents + rolloutEvents)
@@ -125,7 +127,7 @@ final class HydrationAppModel: ObservableObject {
         }
         updateIntegrationError()
         send(.timeAdvanced)
-        integrationHealth = currentIntegrationHealth
+        integrationHealth = currentIntegrationHealth(at: observedAt)
     }
 
     func openReminder() {
@@ -179,7 +181,7 @@ final class HydrationAppModel: ObservableObject {
     ) {
         do {
             try operation()
-            lastHookEventObservedAt = nil
+            observationActivity.reset()
             hasObservedCodexEvent = false
             rolloutMonitor.reset()
             configurationError = nil
@@ -192,7 +194,7 @@ final class HydrationAppModel: ObservableObject {
         if !isCodexObservationEnabled {
             snapshot = (try? engine.send(.agentObservationUnavailable)) ?? snapshot
         }
-        integrationHealth = currentIntegrationHealth
+        integrationHealth = currentIntegrationHealth(at: Date())
         updateIntegrationError()
     }
 
@@ -237,14 +239,13 @@ final class HydrationAppModel: ObservableObject {
         integrationError = configurationError ?? inboxError
     }
 
-    private var currentIntegrationHealth: CodexIntegrationHealth {
-        let recentlyObservedEvent = lastHookEventObservedAt.map {
-            let elapsed = Date().timeIntervalSince($0)
-            return elapsed >= 0 && elapsed <= connectionFreshnessInterval
-        } ?? false
+    private func currentIntegrationHealth(at evaluatedAt: Date) -> CodexIntegrationHealth {
         return hookInstaller.health(
             command: hookCommand,
-            recentlyObservedEvent: recentlyObservedEvent,
+            recentlyObservedEvent: observationActivity.wasObservedRecently(
+                at: evaluatedAt,
+                freshnessInterval: connectionFreshnessInterval
+            ),
             observationFailed: inboxError != nil
         )
     }
@@ -273,5 +274,31 @@ final class HydrationAppModel: ObservableObject {
 
     private static func shellQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+}
+
+struct CodexObservationActivity {
+    private var lastObservedAt: Date?
+
+    mutating func record(
+        hookEventCount: Int,
+        rolloutEventCount: Int,
+        observedAt: Date
+    ) {
+        guard hookEventCount > 0 || rolloutEventCount > 0 else { return }
+        lastObservedAt = observedAt
+    }
+
+    mutating func reset() {
+        lastObservedAt = nil
+    }
+
+    func wasObservedRecently(
+        at evaluatedAt: Date,
+        freshnessInterval: TimeInterval
+    ) -> Bool {
+        guard let lastObservedAt else { return false }
+        let elapsed = evaluatedAt.timeIntervalSince(lastObservedAt)
+        return elapsed >= 0 && elapsed <= freshnessInterval
     }
 }

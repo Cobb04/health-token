@@ -223,6 +223,31 @@ func compactReminderPresentation() {
     #expect(presentation.snoozeActionTitle == "15 分钟")
 }
 
+@Test("a privacy-safe rollout event establishes Codex connection freshness")
+func rolloutEventEstablishesConnectionFreshness() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    var activity = CodexObservationActivity()
+
+    activity.record(
+        hookEventCount: 0,
+        rolloutEventCount: 1,
+        observedAt: observedAt
+    )
+
+    #expect(
+        activity.wasObservedRecently(
+            at: observedAt.addingTimeInterval(119),
+            freshnessInterval: 120
+        )
+    )
+    #expect(
+        !activity.wasObservedRecently(
+            at: observedAt.addingTimeInterval(121),
+            freshnessInterval: 120
+        )
+    )
+}
+
 @Test("non-color cues name all reminder and integration states")
 func nonColorStateCues() {
     let states: [(HydrationStatus, ReminderLevel, CodexIntegrationHealth, String)] = [
