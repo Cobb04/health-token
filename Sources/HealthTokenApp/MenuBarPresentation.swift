@@ -84,6 +84,20 @@ struct CodexIntegrationPresentation {
     }
 }
 
+struct CodexCompactAttentionPresentation {
+    let health: CodexIntegrationHealth
+    let isObservationEnabled: Bool
+    let hasObservedEvent: Bool
+    let hasError: Bool
+
+    var shouldShow: Bool {
+        if !isObservationEnabled || health == .unavailable || hasError {
+            return true
+        }
+        return health == .fallbackOnly && !hasObservedEvent
+    }
+}
+
 enum HydrationVolumeFormatter {
     static func bottleCapacity(_ milliliters: Int) -> String {
         if milliliters.isMultiple(of: 1_000) {

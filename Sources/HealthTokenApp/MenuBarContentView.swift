@@ -206,9 +206,12 @@ struct MenuBarContentView: View {
     }
 
     private var codexNeedsAttention: Bool {
-        !model.isCodexObservationEnabled
-            || model.integrationHealth != .connected
-            || model.integrationError != nil
+        CodexCompactAttentionPresentation(
+            health: model.integrationHealth,
+            isObservationEnabled: model.isCodexObservationEnabled,
+            hasObservedEvent: model.hasObservedCodexEvent,
+            hasError: model.integrationError != nil
+        ).shouldShow
     }
 
     private var codexAttentionLabel: String {

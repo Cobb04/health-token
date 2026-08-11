@@ -352,6 +352,32 @@ func codexIntegrationUsesActionableLanguage() {
     #expect(distinctStatuses.count == 5)
 }
 
+@Test("compact Codex status stops nagging after a trusted event")
+func compactCodexStatusUsesDurableSessionTrust() {
+    let waiting = CodexCompactAttentionPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: true,
+        hasObservedEvent: false,
+        hasError: false
+    )
+    let confirmed = CodexCompactAttentionPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: true,
+        hasObservedEvent: true,
+        hasError: false
+    )
+    let failed = CodexCompactAttentionPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: true,
+        hasObservedEvent: true,
+        hasError: true
+    )
+
+    #expect(waiting.shouldShow)
+    #expect(!confirmed.shouldShow)
+    #expect(failed.shouldShow)
+}
+
 @Test("Custom bottle capacities accept only integer milliliters in the supported range")
 func customBottleCapacityValidation() {
     #expect(BottleCapacityInput.parse(" 600 ") == 600)
