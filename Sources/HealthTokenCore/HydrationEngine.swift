@@ -92,6 +92,7 @@ public final class HydrationEngine {
     }
 
     public var snapshot: HydrationSnapshot {
+        let dailySummaries = recentDailySummaries
         return HydrationSnapshot(
             status: status,
             reminderLevel: reminderLevel,
@@ -99,7 +100,8 @@ public final class HydrationEngine {
             settings: persistence.settings,
             records: persistence.records,
             cycle: persistence.cycle,
-            todayEstimatedMilliliters: todayEstimatedMilliliters,
+            todayEstimatedMilliliters: dailySummaries.first?.estimatedMilliliters ?? 0,
+            recentDailySummaries: dailySummaries,
             remainingTimeUntilReminder: persistence.cycle.remainingTime(at: evaluatedAt),
             snoozedUntil: persistence.snoozedUntil,
             undoableDrinkRecord: undoableDrinkRecord
@@ -140,7 +142,7 @@ public final class HydrationEngine {
             )
         case .completeBottle:
             let capacity = persistence.settings.bottleCapacityMilliliters
-            let remainder = todayEstimatedMilliliters % capacity
+            let remainder = currentBottleEstimatedMilliliters % capacity
             let adjustment = remainder == 0 ? capacity : capacity - remainder
             try recordDrink(
                 estimatedMilliliters: adjustment,
@@ -272,10 +274,41 @@ public final class HydrationEngine {
         )
     }
 
-    private var todayEstimatedMilliliters: Int {
-        persistence.records
-            .filter { calendar.isDate($0.timestamp, inSameDayAs: evaluatedAt) }
-            .reduce(0) { $0 + $1.estimatedMilliliters }
+    private var recentDailySummaries: [DailyHydrationSummary] {
+        guard let today = calendar.dateInterval(of: .day, for: evaluatedAt) else {
+            return []
+        }
+
+        return (0..<7).compactMap { offset in
+            guard let dayAnchor = calendar.date(
+                byAdding: .day,
+                value: -offset,
+                to: today.start
+            ), let interval = calendar.dateInterval(of: .day, for: dayAnchor) else {
+                return nil
+            }
+            let records = persistence.records.filter {
+                $0.timestamp >= interval.start && $0.timestamp < interval.end
+            }
+            return DailyHydrationSummary(
+                interval: interval,
+                estimatedMilliliters: records.reduce(0) {
+                    $0 + $1.estimatedMilliliters
+                },
+                recordCount: records.count
+            )
+        }
+    }
+
+    private var currentBottleEstimatedMilliliters: Int {
+        var total = 0
+        for record in persistence.records.reversed() {
+            if record.sourceAction == .bottleReconciliation {
+                break
+            }
+            total += record.estimatedMilliliters
+        }
+        return total
     }
 
     private func evaluatedStatus() -> HydrationStatus {
