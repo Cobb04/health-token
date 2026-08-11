@@ -80,7 +80,7 @@ The adapter normalizes local Codex hook events. Rollout discovery visits at
 most 512 directory entries (to depth six), considers at most eight rollout
 files modified during the previous ten minutes, and never scans the complete
 Codex history. Every poll may read at most 64 KiB from one file and 256 KiB in
-total, including an 8 KiB-per-file session-metadata prefix. One JSONL record
+total, including a 32 KiB-per-file session-metadata prefix. One JSONL record
 and each retained partial record are capped at 32 KiB. Parser state is limited
 to the eight active files and 32 opaque attention request IDs per file; opaque
 IDs are capped at 128 UTF-8 bytes.

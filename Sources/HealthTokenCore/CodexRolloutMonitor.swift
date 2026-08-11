@@ -22,7 +22,7 @@ public struct CodexObservationLimits: Equatable, Sendable {
         maxCandidateAge: TimeInterval = 10 * 60,
         maxBytesPerFile: Int = 64 * 1024,
         maxTotalBytesPerPoll: Int = 256 * 1024,
-        maxSessionMetadataBytes: Int = 8 * 1024,
+        maxSessionMetadataBytes: Int = 32 * 1024,
         maxRecordBytes: Int = 32 * 1024,
         maxPendingAttentionRequests: Int = 32,
         startupRecoveryInterval: TimeInterval = 2 * 60,
@@ -586,21 +586,31 @@ public final class CodexRolloutMonitor {
         size: UInt64,
         readState: inout PollReadState
     ) throws -> SessionContext? {
-        let requested = min(
-            Int(min(size, UInt64(Int.max))),
-            limits.maxSessionMetadataBytes
-        )
-        let prefix = try read(
-            url,
-            offset: 0,
-            requestedCount: requested,
-            readState: &readState
-        )
-        for line in prefix.split(separator: 0x0A) {
+        let chunkBytes = 8 * 1024
+        var prefix = Data()
+        while prefix.count < limits.maxSessionMetadataBytes,
+              UInt64(prefix.count) < size {
+            let fileRemaining = Int(min(
+                size - UInt64(prefix.count),
+                UInt64(Int.max)
+            ))
+            let requested = min(
+                chunkBytes,
+                limits.maxSessionMetadataBytes - prefix.count,
+                fileRemaining
+            )
+            let chunk = try read(
+                url,
+                offset: UInt64(prefix.count),
+                requestedCount: requested,
+                readState: &readState
+            )
+            guard !chunk.isEmpty else { return nil }
+            prefix.append(chunk)
+            guard let newline = prefix.firstIndex(of: 0x0A) else { continue }
+            let line = Data(prefix[..<newline])
             guard line.count <= limits.maxRecordBytes else { return nil }
-            if let context = sessionContext(from: Data(line)) {
-                return context
-            }
+            return sessionContext(from: line)
         }
         return nil
     }

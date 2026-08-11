@@ -137,6 +137,68 @@ func steadyStateDesktopToolCallsEmitActivity() throws {
     #expect(!encodedText.contains("live-call"))
 }
 
+@Test("large Codex Desktop session metadata still anchors live tool activity")
+func largeDesktopSessionMetadataAnchorsLiveActivity() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutURL = directory.appendingPathComponent("rollout-large-desktop.jsonl")
+    let privateMetadata = String(repeating: "x", count: 18 * 1024)
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:59:20Z","type":"session_meta","payload":{"id":"large-desktop-root","source":"app-server","private":"\(privateMetadata)"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    try appendRolloutLine(
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"synthetic private command"}}"#,
+        to: rolloutURL
+    )
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+
+    #expect(events.count == 1)
+    #expect(events.first?.sessionID == "large-desktop-root")
+    #expect(events.first?.kind == .toolUsed)
+}
+
+@Test("large session metadata reading stops after the complete first line")
+func largeSessionMetadataReadStopsAtFirstLine() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutURL = directory.appendingPathComponent("rollout-large-child.jsonl")
+    let privateMetadata = String(repeating: "x", count: 18 * 1024)
+    let unrelatedRecord = String(repeating: "y", count: 20 * 1024)
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:59:20Z","type":"session_meta","payload":{"id":"large-child","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}},"private":"\(privateMetadata)"}}
+        {"timestamp":"2027-01-15T07:59:21Z","type":"event_msg","payload":{"type":"unknown","private":"\(unrelatedRecord)"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+    #expect(monitor.lastPollMetrics.maximumFileBytesRead < 32 * 1024)
+}
+
 @Test("startup rejects stale resolved terminal malformed partial oversized and out-of-order attention")
 func startupAttentionEvidenceFailsClosed() throws {
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
