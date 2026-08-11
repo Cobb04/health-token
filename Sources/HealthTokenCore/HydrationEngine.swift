@@ -279,23 +279,36 @@ public final class HydrationEngine {
             return []
         }
 
-        return (0..<7).compactMap { offset in
+        let intervals = (0..<365).compactMap { offset -> DateInterval? in
             guard let dayAnchor = calendar.date(
                 byAdding: .day,
                 value: -offset,
                 to: today.start
-            ), let interval = calendar.dateInterval(of: .day, for: dayAnchor) else {
+            ) else {
                 return nil
             }
-            let records = persistence.records.filter {
-                $0.timestamp >= interval.start && $0.timestamp < interval.end
+            return calendar.dateInterval(of: .day, for: dayAnchor)
+        }
+        guard let oldestInterval = intervals.last else { return [] }
+
+        var buckets: [Date: (milliliters: Int, count: Int)] = [:]
+        for record in persistence.records
+        where record.timestamp >= oldestInterval.start && record.timestamp < today.end {
+            guard let interval = calendar.dateInterval(of: .day, for: record.timestamp) else {
+                continue
             }
+            var bucket = buckets[interval.start] ?? (0, 0)
+            bucket.milliliters += record.estimatedMilliliters
+            bucket.count += 1
+            buckets[interval.start] = bucket
+        }
+
+        return intervals.map { interval in
+            let bucket = buckets[interval.start] ?? (0, 0)
             return DailyHydrationSummary(
                 interval: interval,
-                estimatedMilliliters: records.reduce(0) {
-                    $0 + $1.estimatedMilliliters
-                },
-                recordCount: records.count
+                estimatedMilliliters: bucket.milliliters,
+                recordCount: bucket.count
             )
         }
     }

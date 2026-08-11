@@ -371,7 +371,7 @@ func totalUsesLocalCalendarDay() throws {
     #expect(nextDay.todayEstimatedMilliliters == 25)
 }
 
-@Test("recent hydration summaries include today and six prior local calendar days")
+@Test("recent hydration summaries include today and 364 prior local calendar days")
 func recentDailySummariesIncludeEmptyDays() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
@@ -418,11 +418,15 @@ func recentDailySummariesIncludeEmptyDays() throws {
 
     let summaries = engine.snapshot.recentDailySummaries
 
-    #expect(summaries.count == 7)
-    #expect(summaries.map(\.estimatedMilliliters) == [35, 500, 0, 25, 0, 0, 0])
-    #expect(summaries.map(\.recordCount) == [1, 1, 0, 1, 0, 0, 0])
+    try #require(summaries.count == 365)
+    #expect(Array(summaries.prefix(7).map(\.estimatedMilliliters)) == [35, 500, 0, 25, 0, 0, 0])
+    #expect(Array(summaries.prefix(7).map(\.recordCount)) == [1, 1, 0, 1, 0, 0, 0])
     #expect(summaries[0].interval.start == calendar.startOfDay(for: today))
     #expect(summaries[1].interval.start == calendar.startOfDay(for: yesterday))
+    #expect(
+        summaries[364].interval.start
+            == calendar.startOfDay(for: calendar.date(byAdding: .day, value: -364, to: today)!)
+    )
 }
 
 @Test("a record exactly at local midnight belongs only to the new hydration day")
