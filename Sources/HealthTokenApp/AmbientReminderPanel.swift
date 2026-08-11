@@ -161,10 +161,10 @@ final class AmbientReminderPanelController {
             return NSSize(width: 330, height: 132)
         }
         if snapshot.reminderLevel == .confirmation {
-            return NSSize(width: 292, height: 142)
+            return NSSize(width: 330, height: 82)
         }
         if snapshot.detailsExpanded {
-            return NSSize(width: 292, height: 294)
+            return NSSize(width: 330, height: 202)
         }
         return NSSize(width: 48, height: 48)
     }

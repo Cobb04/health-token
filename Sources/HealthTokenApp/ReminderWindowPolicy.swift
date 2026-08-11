@@ -126,3 +126,16 @@ struct ReminderAppearancePolicy {
     var cardBorderOpacity: Double { increasedContrast ? 1 : 0.18 }
     var confirmationBorderOpacity: Double { increasedContrast ? 1 : 0.12 }
 }
+
+struct HydrationReminderPresentation {
+    let sipMilliliters: Int
+    let todayEstimatedMilliliters: Int
+
+    var title: String { "喝一口，继续专注" }
+    var summary: String {
+        "本次约 \(sipMilliliters) mL · 今日已记录 \(todayEstimatedMilliliters) mL"
+    }
+    var primaryActionTitle: String { "＋ 一口" }
+    var primaryAmount: String { "\(sipMilliliters) mL" }
+    var snoozeActionTitle: String { "15 分钟" }
+}

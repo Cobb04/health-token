@@ -209,6 +209,20 @@ func increasedContrastAppearance() {
     #expect(increased.cardBorderOpacity == 1)
 }
 
+@Test("compact reminder keeps hydration context on one quiet line")
+func compactReminderPresentation() {
+    let presentation = HydrationReminderPresentation(
+        sipMilliliters: 35,
+        todayEstimatedMilliliters: 175
+    )
+
+    #expect(presentation.title == "喝一口，继续专注")
+    #expect(presentation.summary == "本次约 35 mL · 今日已记录 175 mL")
+    #expect(presentation.primaryActionTitle == "＋ 一口")
+    #expect(presentation.primaryAmount == "35 mL")
+    #expect(presentation.snoozeActionTitle == "15 分钟")
+}
+
 @Test("non-color cues name all reminder and integration states")
 func nonColorStateCues() {
     let states: [(HydrationStatus, ReminderLevel, CodexIntegrationHealth, String)] = [

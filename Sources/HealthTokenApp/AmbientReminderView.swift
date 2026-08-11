@@ -84,76 +84,116 @@ struct AmbientReminderView: View {
     }
 
     private var detailsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("喝一口水", systemImage: "drop.fill")
-                    .font(.headline)
-                    .foregroundStyle(.cyan)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text("HEALTH TOKEN")
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(0.35)
+                    .foregroundStyle(Color.accentColor)
                 Spacer()
                 Button(action: { intentionally(model.closeReminder) }) {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ReminderIconButtonStyle())
                 .accessibilityLabel("收起饮水提醒")
+                .keyboardShortcut(.cancelAction)
             }
 
-            Text("本次将记录约 \(sipMilliliters) mL")
-                .font(.subheadline)
-            Text("今日估算总量：约 \(model.snapshot.todayEstimatedMilliliters) mL")
-                .font(.subheadline)
+            Text(reminderPresentation.title)
+                .font(.system(size: 19, weight: .bold))
+                .tracking(-0.45)
+                .padding(.top, 9)
+
+            Text(reminderPresentation.summary)
+                .font(.system(size: 12, weight: .regular))
                 .foregroundStyle(.secondary)
+                .padding(.top, 3)
 
-            Button(action: { intentionally(model.confirmSip) }) {
-                Text("喝了一口 · 约 \(sipMilliliters) mL")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.cyan)
-            .accessibilityLabel(ReminderControlName.drink(sipMilliliters: sipMilliliters))
-            .keyboardShortcut(.defaultAction)
-
-            Button(action: { intentionally(model.snooze) }) {
-                Text("稍后 · 15 分钟")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityLabel(ReminderControlName.snooze)
-            .keyboardShortcut("s", modifiers: [])
-
-            HStack {
-                Button("暂停") {
-                    intentionally { model.setPaused(true) }
+            HStack(spacing: 8) {
+                Button(action: { intentionally(model.confirmSip) }) {
+                    HStack(spacing: 12) {
+                        Text(reminderPresentation.primaryActionTitle)
+                            .font(.system(size: 13, weight: .semibold))
+                        Spacer(minLength: 0)
+                        Text(reminderPresentation.primaryAmount)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .opacity(0.8)
+                    }
+                    .padding(.horizontal, 13)
+                    .frame(maxWidth: .infinity, minHeight: 42)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(ReminderPrimaryButtonStyle())
+                .accessibilityLabel(ReminderControlName.drink(sipMilliliters: sipMilliliters))
+                .keyboardShortcut(.defaultAction)
+
+                Button(action: { intentionally(model.snooze) }) {
+                    Text(reminderPresentation.snoozeActionTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 42)
+                }
+                .buttonStyle(ReminderSecondaryButtonStyle())
+                .accessibilityLabel(ReminderControlName.snooze)
+                .keyboardShortcut("s", modifiers: [])
+            }
+            .padding(.top, 14)
+
+            HStack(spacing: 3) {
+                Button {
+                    intentionally { model.setPaused(true) }
+                } label: {
+                    Label("暂停", systemImage: "pause.fill")
+                }
+                .buttonStyle(ReminderTextButtonStyle())
                 .accessibilityLabel(ReminderControlName.pause)
                 .keyboardShortcut("p", modifiers: [])
 
-                Spacer()
-
                 settingsMenu
+
+                Spacer(minLength: 4)
+
+                Text("\(reminderIntervalMinutes):00 后再提醒")
+                    .font(.system(size: 10.5, weight: .regular, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.primary.opacity(0.5))
+                    .lineLimit(1)
             }
+            .font(.system(size: 11, weight: .medium))
+            .padding(.top, 8)
         }
-        .modifier(ReminderCardStyle(appearance: appearance))
+        .modifier(CompactReminderCardStyle(appearance: appearance))
     }
 
     private var confirmationCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 6) {
-                Label(confirmationTitle, systemImage: "checkmark.circle.fill")
-                    .font(.headline)
-                    .foregroundStyle(.cyan)
-                Text("今日估算总量：约 \(model.snapshot.todayEstimatedMilliliters) mL")
-                    .font(.caption)
+        HStack(spacing: 11) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Color.accentColor, in: Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(confirmationTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                Text("今日估算总量 \(model.snapshot.todayEstimatedMilliliters) mL")
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
-                Text("长按收起")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
+
+            Spacer(minLength: 4)
+
             if let record = model.snapshot.undoableDrinkRecord {
-                Button("撤销刚才的记录") {
+                Button("撤销") {
                     intentionally { model.undoDrink(record.id) }
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(ReminderSecondaryButtonStyle())
                 .accessibilityLabel(
                     ReminderControlName.undo(sipMilliliters: confirmedMilliliters)
                 )
@@ -169,6 +209,17 @@ struct AmbientReminderView: View {
             intentionally(model.dismissConfirmation)
         }
         .accessibilityHint(ReminderControlName.dismissConfirmation)
+    }
+
+    private var reminderPresentation: HydrationReminderPresentation {
+        HydrationReminderPresentation(
+            sipMilliliters: sipMilliliters,
+            todayEstimatedMilliliters: model.snapshot.todayEstimatedMilliliters
+        )
+    }
+
+    private var reminderIntervalMinutes: Int {
+        Int(model.snapshot.settings.reminderInterval / 60)
     }
 
     private var sipMilliliters: Int {
@@ -193,7 +244,7 @@ struct AmbientReminderView: View {
     }
 
     private var settingsMenu: some View {
-        Menu("设置") {
+        Menu {
             Picker("每口估算", selection: sipEstimate) {
                 ForEach(SipEstimate.allCases, id: \.self) { estimate in
                     Text("约 \(estimate.milliliters) mL").tag(estimate)
@@ -204,7 +255,11 @@ struct AmbientReminderView: View {
                     Text("\(Int(interval / 60)) 分钟").tag(interval)
                 }
             }
+        } label: {
+            Label("设置", systemImage: "gearshape")
         }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
         .accessibilityLabel(ReminderControlName.settings)
         .keyboardShortcut(",", modifiers: [.command])
     }
@@ -308,6 +363,68 @@ private struct ReminderCardStyle: ViewModifier {
                     .stroke(.white.opacity(appearance.cardBorderOpacity))
             )
             .padding(4)
+    }
+}
+
+private struct CompactReminderCardStyle: ViewModifier {
+    let appearance: ReminderAppearancePolicy
+
+    func body(content: Content) -> some View {
+        content
+            .padding(15)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .stroke(.white.opacity(appearance.cardBorderOpacity))
+            )
+            .shadow(color: .black.opacity(0.16), radius: 18, y: 8)
+            .padding(4)
+    }
+}
+
+private struct ReminderPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .background(Color.accentColor)
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .shadow(color: Color.accentColor.opacity(0.2), radius: 5, y: 2)
+            .opacity(configuration.isPressed ? 0.76 : 1)
+    }
+}
+
+private struct ReminderSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 30)
+            .background(Color.secondary.opacity(configuration.isPressed ? 0.16 : 0.09))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.2))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct ReminderTextButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.primary.opacity(0.68))
+            .padding(.horizontal, 6)
+            .frame(height: 26)
+            .background(configuration.isPressed ? Color.secondary.opacity(0.1) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
+private struct ReminderIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.secondary)
+            .background(configuration.isPressed ? Color.secondary.opacity(0.12) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
