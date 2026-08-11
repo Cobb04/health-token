@@ -20,6 +20,18 @@ enum HydrationHeatmapPeriod: String, CaseIterable, Identifiable {
         case .year: 365
         }
     }
+
+    var layout: HydrationHeatmapLayoutStyle {
+        switch self {
+        case .quarter: .focusedQuarter
+        case .year: .yearOverview
+        }
+    }
+}
+
+enum HydrationHeatmapLayoutStyle: Equatable {
+    case focusedQuarter
+    case yearOverview
 }
 
 enum HydrationHeatmapIntensity: Int, Equatable, Sendable {
@@ -170,6 +182,7 @@ struct HydrationHeatmapLayout {
 struct DailyHydrationHeatmapPresentation {
     let days: [HydrationHeatmapDay]
     let todayAmount: String
+    let todayBottleEquivalent: String
     let recentSevenDayTotal: String
     let chartAccessibilityLabel: String
 
@@ -218,6 +231,7 @@ struct DailyHydrationHeatmapPresentation {
 
         let todayMilliliters = summaries.first?.estimatedMilliliters ?? 0
         todayAmount = "\(todayMilliliters) mL"
+        todayBottleEquivalent = "今天 · 约 \(Self.bottleText(todayMilliliters, capacity: bottleCapacity)) 瓶"
         let recentTotal = summaries.prefix(7).reduce(0) {
             $0 + $1.estimatedMilliliters
         }

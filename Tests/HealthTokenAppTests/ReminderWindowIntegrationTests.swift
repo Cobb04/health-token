@@ -396,6 +396,8 @@ func customBottleCapacityValidation() {
 func hydrationHeatmapPeriodAndIntensitySemantics() {
     #expect(HydrationHeatmapPeriod.quarter.dayCount == 84)
     #expect(HydrationHeatmapPeriod.year.dayCount == 365)
+    #expect(HydrationHeatmapPeriod.quarter.layout == .focusedQuarter)
+    #expect(HydrationHeatmapPeriod.year.layout == .yearOverview)
     #expect(HydrationHeatmapIntensity(estimatedMilliliters: 0, bottleCapacity: 1_000, isAvailable: false) == .unavailable)
     #expect(HydrationHeatmapIntensity(estimatedMilliliters: 0, bottleCapacity: 1_000, isAvailable: true) == .zero)
     #expect(HydrationHeatmapIntensity(estimatedMilliliters: 999, bottleCapacity: 1_000, isAvailable: true) == .partialBottle)
@@ -447,6 +449,7 @@ func hydrationHeatmapPresentationUsesChronologicalDaysAndTrackingBoundary() thro
     #expect(presentation.days[81].intensity == .zero)
     #expect(presentation.days.last?.intensity == .partialBottle)
     #expect(presentation.todayAmount == "700 mL")
+    #expect(presentation.todayBottleEquivalent == "今天 · 约 0.7 瓶")
     #expect(presentation.recentSevenDayTotal == "近 7 日 · 1.7 L")
     #expect(presentation.days.first?.accessibilityLabel.contains("无数据") == true)
     #expect(presentation.days[81].accessibilityLabel.contains("没有饮水记录") == true)

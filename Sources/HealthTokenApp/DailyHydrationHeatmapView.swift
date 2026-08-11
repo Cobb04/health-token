@@ -19,10 +19,16 @@ struct DailyHydrationHeatmapView: View {
         let layout = makeLayout(for: presentation)
         let selectedDay = selectedDay(in: presentation)
 
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("DAILY HYDRATION")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.15)
+                .foregroundStyle(Color.accentColor)
+
             HStack(spacing: 16) {
                 Text("饮水记录")
-                    .font(.headline)
+                    .font(.system(size: 21, weight: .bold))
+                    .tracking(-0.7)
                 Spacer(minLength: 8)
                 Picker("统计时间范围", selection: $period) {
                     ForEach(HydrationHeatmapPeriod.allCases) { period in
@@ -34,13 +40,31 @@ struct DailyHydrationHeatmapView: View {
                 .frame(width: 112)
                 .accessibilityLabel("饮水统计时间范围")
             }
+            .padding(.top, 6)
 
-            summaryHeader(presentation)
-            selectedDayDetail(selectedDay)
-            heatmap(presentation: presentation, layout: layout)
-            legend
+            if period.layout == .focusedQuarter {
+                focusedQuarterHeader(presentation)
+                    .padding(.top, 18)
+            }
+
+            heatmapCard(
+                presentation: presentation,
+                layout: layout,
+                selectedDay: selectedDay
+            )
+            .padding(.top, 16)
+
+            HStack(spacing: 12) {
+                Text("每日记录根据当前所在地重新分日")
+                Spacer(minLength: 8)
+                Text(period == .quarter ? "84 天" : "365 天")
+                    .monospacedDigit()
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.tertiary)
+            .padding(.top, 13)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
 
     private func makePresentation() -> DailyHydrationHeatmapPresentation {
@@ -57,10 +81,12 @@ struct DailyHydrationHeatmapView: View {
     private func makeLayout(
         for presentation: DailyHydrationHeatmapPresentation
     ) -> HydrationHeatmapLayout {
-        HydrationHeatmapLayout(
+        var displayCalendar = calendar
+        displayCalendar.firstWeekday = 2
+        return HydrationHeatmapLayout(
             days: presentation.days,
             today: summaries.first?.interval.start ?? .now,
-            calendar: calendar,
+            calendar: displayCalendar,
             locale: locale
         )
     }
@@ -75,15 +101,31 @@ struct DailyHydrationHeatmapView: View {
         return presentation.days.last
     }
 
-    private func summaryHeader(
+    private func focusedQuarterHeader(
+        _ presentation: DailyHydrationHeatmapPresentation
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(presentation.todayAmount)
+                .font(.custom("Avenir Next", size: 37).weight(.semibold))
+                .tracking(-1.8)
+                .foregroundStyle(Color.accentColor)
+                .monospacedDigit()
+            Text(presentation.todayBottleEquivalent)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func yearSummaryHeader(
         _ presentation: DailyHydrationHeatmapPresentation
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("今天")
-                .foregroundStyle(.secondary)
-            Text(presentation.todayAmount)
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
+            (
+                Text("今天 ").foregroundColor(.primary)
+                    + Text(presentation.todayAmount).foregroundColor(Color.accentColor)
+            )
+                .font(.custom("Avenir Next", size: 25).weight(.semibold))
+                .tracking(-1)
                 .monospacedDigit()
             Spacer(minLength: 8)
             Text(presentation.recentSevenDayTotal)
@@ -91,6 +133,46 @@ struct DailyHydrationHeatmapView: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
         }
+    }
+
+    @ViewBuilder
+    private func heatmapCard(
+        presentation: DailyHydrationHeatmapPresentation,
+        layout: HydrationHeatmapLayout,
+        selectedDay: HydrationHeatmapDay?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if period.layout == .focusedQuarter {
+                Text("饮水节奏")
+                    .font(.system(size: 14, weight: .semibold))
+                    .tracking(-0.25)
+
+                heatmap(presentation: presentation, layout: layout)
+                    .padding(.top, 11)
+
+                selectedDayDetail(selectedDay)
+                    .padding(.top, 11)
+            } else {
+                yearSummaryHeader(presentation)
+                selectedDayDetail(selectedDay)
+                    .padding(.top, 13)
+                heatmap(presentation: presentation, layout: layout)
+                    .padding(.top, 12)
+            }
+
+            legend
+                .padding(.top, 9)
+        }
+        .padding(16)
+        .background(
+            Color(nsColor: .textBackgroundColor).opacity(0.82),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.58), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.025), radius: 1, y: 1)
     }
 
     @ViewBuilder
@@ -172,23 +254,30 @@ struct DailyHydrationHeatmapView: View {
         .chartXScale(domain: 0...Double(max(1, layout.weekCount)))
         .chartYScale(domain: 0...7)
         .chartXAxis {
-            AxisMarks(values: layout.monthTicks.map { Double($0.weekIndex) + 0.5 }) { value in
+            AxisMarks(
+                position: .top,
+                values: layout.monthTicks.map { Double($0.weekIndex) + 0.5 }
+            ) { value in
                 AxisValueLabel {
                     if let position = value.as(Double.self),
                        let tick = monthTick(at: position, layout: layout) {
                         Text(tick.label)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }
         }
         .chartYAxis {
-            AxisMarks(position: .leading, values: [0.5, 2.5, 4.5, 6.5]) { value in
+            AxisMarks(position: .leading, values: [2.5, 4.5, 6.5]) { value in
                 AxisValueLabel {
                     if let position = value.as(Double.self) {
                         Text(weekdayLabel(
                             at: weekdayIndex(forPlotValue: position),
                             layout: layout
                         ))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
                     }
                 }
             }
