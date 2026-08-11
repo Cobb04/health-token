@@ -7,27 +7,12 @@ struct HealthTokenSettingsView: View {
 
     var body: some View {
         Form {
-            Section("每日饮水") {
-                ForEach(
-                    Array(model.snapshot.recentDailySummaries.enumerated()),
-                    id: \.element.interval.start
-                ) { offset, summary in
-                    let presentation = DailyHydrationHistoryPresentation(
-                        summary: summary,
-                        dayOffset: offset
-                    )
-                    LabeledContent(presentation.title) {
-                        Text(presentation.amount)
-                            .monospacedDigit()
-                            .foregroundStyle(
-                                summary.estimatedMilliliters == 0
-                                    ? Color.secondary
-                                    : Color.primary
-                            )
-                    }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(presentation.accessibilityLabel)
-                }
+            Section {
+                DailyHydrationHeatmapView(
+                    summaries: model.snapshot.recentDailySummaries,
+                    trackingStartedAt: model.snapshot.records.map(\.timestamp).min(),
+                    bottleCapacity: model.snapshot.settings.bottleCapacityMilliliters
+                )
             }
 
             Section("饮水设置") {

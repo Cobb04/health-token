@@ -62,7 +62,7 @@ appearance, day change, clock change, time-zone change, locale change, and wake.
 The existing presentation poll is retained only as a fallback.
 
 The compact 264-point menu remains unchanged. The Settings window uses a native
-seven-row SwiftUI section with exact monospaced volumes, localized dates, zero
-days, and one complete VoiceOver label per row. This follows platform hierarchy
-and preserves the primary one-sip action rather than turning history into a new
-dashboard.
+Swift Charts heatmap with quarterly and yearly tabs, exact selected-day text,
+localized dates, and one complete VoiceOver label per day. This preserves the
+primary one-sip action while giving long-term history a dedicated settings
+surface.

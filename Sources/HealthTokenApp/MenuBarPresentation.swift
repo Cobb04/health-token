@@ -116,32 +116,3 @@ enum BottleCapacityInput {
         return milliliters
     }
 }
-
-struct DailyHydrationHistoryPresentation {
-    let title: String
-    let amount: String
-    let accessibilityLabel: String
-
-    init(
-        summary: DailyHydrationSummary,
-        dayOffset: Int,
-        calendar: Calendar = .autoupdatingCurrent,
-        locale: Locale = .autoupdatingCurrent
-    ) {
-        switch dayOffset {
-        case 0:
-            title = "今天"
-        case 1:
-            title = "昨天"
-        default:
-            let formatter = DateFormatter()
-            formatter.calendar = calendar
-            formatter.timeZone = calendar.timeZone
-            formatter.locale = locale
-            formatter.setLocalizedDateFormatFromTemplate("MMMEd")
-            title = formatter.string(from: summary.interval.start)
-        }
-        amount = "\(summary.estimatedMilliliters) mL"
-        accessibilityLabel = "\(title)，估算 \(summary.estimatedMilliliters) 毫升"
-    }
-}

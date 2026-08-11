@@ -391,35 +391,108 @@ func customBottleCapacityValidation() {
     #expect(BottleCapacityInput.parse("1.2 L") == nil)
 }
 
-@Test("daily hydration rows use concise labels and complete VoiceOver text")
-func dailyHydrationHistoryPresentationIsAccessible() {
-    let interval = DateInterval(
-        start: Date(timeIntervalSince1970: 1_800_000_000),
-        duration: 24 * 60 * 60
-    )
-    let today = DailyHydrationHistoryPresentation(
-        summary: DailyHydrationSummary(
+@Test("hydration heatmap periods and bottle-relative intensities stay stable")
+func hydrationHeatmapPeriodAndIntensitySemantics() {
+    #expect(HydrationHeatmapPeriod.quarter.dayCount == 84)
+    #expect(HydrationHeatmapPeriod.year.dayCount == 365)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 0, bottleCapacity: 1_000, isAvailable: false) == .unavailable)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 0, bottleCapacity: 1_000, isAvailable: true) == .zero)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 999, bottleCapacity: 1_000, isAvailable: true) == .partialBottle)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 1_000, bottleCapacity: 1_000, isAvailable: true) == .oneBottle)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 1_999, bottleCapacity: 1_000, isAvailable: true) == .oneBottle)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 2_000, bottleCapacity: 1_000, isAvailable: true) == .twoBottles)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 2_999, bottleCapacity: 1_000, isAvailable: true) == .twoBottles)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 3_000, bottleCapacity: 1_000, isAvailable: true) == .threeOrMoreBottles)
+}
+
+@Test("quarter heatmap distinguishes unavailable and zero days with exact accessible values")
+func hydrationHeatmapPresentationUsesChronologicalDaysAndTrackingBoundary() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let today = calendar.date(
+        from: DateComponents(year: 2027, month: 8, day: 11, hour: 12)
+    )!
+    let summaries = try (0..<365).map { offset in
+        let day = try #require(calendar.date(byAdding: .day, value: -offset, to: today))
+        let interval = try #require(calendar.dateInterval(of: .day, for: day))
+        let amount = switch offset {
+        case 0: 700
+        case 1: 1_000
+        default: 0
+        }
+        return DailyHydrationSummary(
             interval: interval,
-            estimatedMilliliters: 1_070,
-            recordCount: 5
-        ),
-        dayOffset: 0
-    )
-    let yesterday = DailyHydrationHistoryPresentation(
-        summary: DailyHydrationSummary(
-            interval: interval,
-            estimatedMilliliters: 0,
-            recordCount: 0
-        ),
-        dayOffset: 1
+            estimatedMilliliters: amount,
+            recordCount: amount == 0 ? 0 : 1
+        )
+    }
+    let trackingStartedAt = try #require(
+        calendar.date(byAdding: .day, value: -2, to: today)
     )
 
-    #expect(today.title == "今天")
-    #expect(today.amount == "1070 mL")
-    #expect(today.accessibilityLabel == "今天，估算 1070 毫升")
-    #expect(yesterday.title == "昨天")
-    #expect(yesterday.amount == "0 mL")
-    #expect(yesterday.accessibilityLabel == "昨天，估算 0 毫升")
+    let presentation = DailyHydrationHeatmapPresentation(
+        summaries: summaries,
+        trackingStartedAt: trackingStartedAt,
+        period: .quarter,
+        bottleCapacity: 1_000,
+        calendar: calendar,
+        locale: Locale(identifier: "zh_CN")
+    )
+
+    try #require(presentation.days.count == 84)
+    #expect(presentation.days.first?.summary.interval.start == summaries[83].interval.start)
+    #expect(presentation.days.last?.summary.interval.start == summaries[0].interval.start)
+    #expect(presentation.days.first?.intensity == .unavailable)
+    #expect(presentation.days[81].intensity == .zero)
+    #expect(presentation.days.last?.intensity == .partialBottle)
+    #expect(presentation.todayAmount == "700 mL")
+    #expect(presentation.recentSevenDayTotal == "近 7 日 · 1.7 L")
+    #expect(presentation.days.first?.accessibilityLabel.contains("无数据") == true)
+    #expect(presentation.days[81].accessibilityLabel.contains("没有饮水记录") == true)
+    #expect(presentation.days.last?.accessibilityLabel.contains("记录约 700 毫升") == true)
+    #expect(presentation.days.last?.accessibilityLabel.contains("约 0.7 瓶") == true)
+}
+
+@Test("hydration heatmap layout respects the calendar week across a month boundary")
+func hydrationHeatmapLayoutUsesCalendarWeekGeometry() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    calendar.firstWeekday = 2
+    let firstDay = try #require(
+        calendar.date(from: DateComponents(year: 2026, month: 12, day: 28, hour: 12))
+    )
+    let days = try (0..<14).map { offset in
+        let date = try #require(calendar.date(byAdding: .day, value: offset, to: firstDay))
+        let interval = try #require(calendar.dateInterval(of: .day, for: date))
+        return HydrationHeatmapDay(
+            summary: DailyHydrationSummary(
+                interval: interval,
+                estimatedMilliliters: offset * 25,
+                recordCount: offset == 0 ? 0 : 1
+            ),
+            intensity: offset == 0 ? .zero : .partialBottle,
+            accessibilityLabel: "day \(offset)"
+        )
+    }
+    let today = try #require(days.last?.summary.interval.start)
+
+    let layout = HydrationHeatmapLayout(
+        days: days,
+        today: today,
+        calendar: calendar,
+        locale: Locale(identifier: "zh_CN")
+    )
+
+    try #require(layout.points.count == 14)
+    #expect(layout.weekCount == 2)
+    #expect(layout.points.first?.weekIndex == 0)
+    #expect(layout.points.first?.weekdayIndex == 0)
+    #expect(layout.points.last?.weekIndex == 1)
+    #expect(layout.points.last?.weekdayIndex == 6)
+    #expect(layout.points.last?.isToday == true)
+    #expect(layout.monthTicks.count == 1)
+    #expect(layout.monthTicks.map(\.weekIndex) == [0])
+    #expect(layout.weekdayLabels.count == 7)
 }
 
 @MainActor

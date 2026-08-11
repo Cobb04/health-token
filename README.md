@@ -52,9 +52,17 @@ Settings, the current hydration-cycle anchor, and drink records are stored at
 ## Daily hydration totals
 
 Drink Records remain the only persisted source of truth. Health Token derives
-today and the previous six natural days from the current system Calendar and
+today and the previous 364 natural days from the current system Calendar and
 time zone; it never clears records or persists a separate mutable daily total.
-The Settings window shows all seven days, including zero-volume days.
+The Settings window presents the same history as a native daily heatmap with
+**季度** (the latest 84 days) and **年度** (the latest 365 days) tabs. Hovering
+the plot shows the exact local date, estimated volume, and bottle equivalent.
+
+Heatmap intensity uses stable multiples of the user's bottle capacity: no
+record, less than one bottle, one bottle, two bottles, and three or more. It
+does not normalize against the largest day in the visible period and does not
+claim that any level is a medical hydration target. Dates before the earliest
+surviving Drink Record are shown as unavailable rather than as zero intake.
 
 Daily summaries refresh on app launch, menu presentation, calendar-day change,
 system clock or time-zone change, locale change, and wake from sleep. The
