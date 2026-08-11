@@ -7,7 +7,8 @@ deliberate sip, snooze for 15 minutes, undo a just-created record, and see
 today's estimated total. The menu bar shows the current cycle as a blue numeric
 countdown and always lets you record a proactive sip. You can also select a
 usual bottle capacity and use **喝完一瓶** to add only the difference needed to
-reach the next capacity checkpoint, avoiding double-counting earlier sips.
+complete the current bottle, avoiding double-counting earlier sips even when a
+bottle spans midnight.
 Both actions restart the hydration cycle, remain available while paused, and
 share a ten-second undo. The lightweight confirmation can be dismissed with a
 long press without undoing its Drink Record. The menu bar also provides
@@ -48,6 +49,29 @@ open .build/release/HealthToken.app
 Settings, the current hydration-cycle anchor, and drink records are stored at
 `~/Library/Application Support/HealthToken/hydration.json`.
 
+## Daily hydration totals
+
+Drink Records remain the only persisted source of truth. Health Token derives
+today and the previous 364 natural days from the current system Calendar and
+time zone; it never clears records or persists a separate mutable daily total.
+The Settings window presents the same history as a native daily heatmap with
+**季度** (the latest 84 days) and **年度** (the latest 365 days) tabs. Hovering
+the plot shows the exact local date, estimated volume, and bottle equivalent.
+
+Heatmap intensity uses stable multiples of the user's bottle capacity: no
+record, less than one bottle, one bottle, two bottles, and three or more. It
+does not normalize against the largest day in the visible period and does not
+claim that any level is a medical hydration target. Dates before the earliest
+surviving Drink Record are shown as unavailable rather than as zero intake.
+
+Daily summaries refresh on app launch, menu presentation, calendar-day change,
+system clock or time-zone change, locale change, and wake from sleep. The
+one-second presentation poll remains a self-healing fallback. Crossing midnight
+does not restart the hydration cycle, resume a paused app, or delete history.
+An overdue reminder from the previous evening remains due after wake, but stale
+Codex activity expires so it returns as the low-interruption reminder until new
+qualifying activity arrives.
+
 ## Codex observation
 
 Use **启用 Codex 观察** in the menu bar to add Health Token's read-only
@@ -59,9 +83,9 @@ whose command exactly matches Health Token's bundled helper.
 
 The menu bar also supports proactive one-sip records and bottle checkpoint
 reconciliation. Choose a common bottle preset or enter any whole-milliliter
-capacity from 100–5000 mL. Completing a bottle adjusts today's estimate to the
-next capacity checkpoint instead of adding a second full bottle on top of sips
-already recorded.
+capacity from 100–5000 mL. Completing a bottle adjusts the current bottle to its
+capacity instead of adding a second full bottle on top of sips already recorded.
+Bottle progress is independent of calendar-day totals.
 
 The menu bar reports:
 

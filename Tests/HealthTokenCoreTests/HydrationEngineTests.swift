@@ -371,6 +371,267 @@ func totalUsesLocalCalendarDay() throws {
     #expect(nextDay.todayEstimatedMilliliters == 25)
 }
 
+@Test("recent hydration summaries include today and 364 prior local calendar days")
+func recentDailySummariesIncludeEmptyDays() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let today = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 8, hour: 10)
+    )!
+    let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+    let threeDaysAgo = calendar.date(byAdding: .day, value: -3, to: today)!
+    let settings = HydrationSettings()
+    let records = [
+        DrinkRecord(
+            id: UUID(),
+            timestamp: today,
+            estimatedMilliliters: 35,
+            sourceAction: .proactiveSip
+        ),
+        DrinkRecord(
+            id: UUID(),
+            timestamp: yesterday,
+            estimatedMilliliters: 500,
+            sourceAction: .bottleReconciliation
+        ),
+        DrinkRecord(
+            id: UUID(),
+            timestamp: threeDaysAgo,
+            estimatedMilliliters: 25,
+            sourceAction: .sipConfirmation
+        )
+    ]
+    let engine = try HydrationEngine(
+        clock: TestClock(now: today),
+        store: InMemoryHydrationStore(
+            persistence: HydrationPersistence(
+                settings: settings,
+                records: records,
+                cycle: HydrationCycle(
+                    startedAt: today,
+                    reminderInterval: settings.reminderInterval
+                )
+            )
+        ),
+        calendar: calendar
+    )
+
+    let summaries = engine.snapshot.recentDailySummaries
+
+    try #require(summaries.count == 365)
+    #expect(Array(summaries.prefix(7).map(\.estimatedMilliliters)) == [35, 500, 0, 25, 0, 0, 0])
+    #expect(Array(summaries.prefix(7).map(\.recordCount)) == [1, 1, 0, 1, 0, 0, 0])
+    #expect(summaries[0].interval.start == calendar.startOfDay(for: today))
+    #expect(summaries[1].interval.start == calendar.startOfDay(for: yesterday))
+    #expect(
+        summaries[364].interval.start
+            == calendar.startOfDay(for: calendar.date(byAdding: .day, value: -364, to: today)!)
+    )
+}
+
+@Test("a record exactly at local midnight belongs only to the new hydration day")
+func midnightRecordBelongsOnlyToTheNewDay() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let midnight = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 8)
+    )!
+    let settings = HydrationSettings()
+    let records = [
+        DrinkRecord(
+            id: UUID(),
+            timestamp: midnight.addingTimeInterval(-1),
+            estimatedMilliliters: 25,
+            sourceAction: .sipConfirmation
+        ),
+        DrinkRecord(
+            id: UUID(),
+            timestamp: midnight,
+            estimatedMilliliters: 35,
+            sourceAction: .proactiveSip
+        )
+    ]
+    let engine = try HydrationEngine(
+        clock: TestClock(now: midnight.addingTimeInterval(60)),
+        store: InMemoryHydrationStore(
+            persistence: HydrationPersistence(
+                settings: settings,
+                records: records,
+                cycle: HydrationCycle(
+                    startedAt: midnight,
+                    reminderInterval: settings.reminderInterval
+                )
+            )
+        ),
+        calendar: calendar
+    )
+
+    let summaries = engine.snapshot.recentDailySummaries
+
+    #expect(summaries[0].estimatedMilliliters == 35)
+    #expect(summaries[0].recordCount == 1)
+    #expect(summaries[1].estimatedMilliliters == 25)
+    #expect(summaries[1].recordCount == 1)
+}
+
+@Test("an overnight overdue reminder stays due as B while today's total resets")
+func overnightDueReminderKeepsCycleButDropsStaleCodexSignal() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let evening = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 7, hour: 23)
+    )!
+    let clock = TestClock(now: evening)
+    let engine = try HydrationEngine(
+        clock: clock,
+        store: InMemoryHydrationStore(),
+        calendar: calendar
+    )
+    _ = try engine.send(.recordProactiveSip)
+    clock.now.addTimeInterval(30 * 60)
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "overnight-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    #expect(engine.snapshot.reminderLevel == .strong)
+    let previousCycle = engine.snapshot.cycle
+
+    clock.now = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 8, hour: 8)
+    )!
+    let morning = try engine.send(.timeAdvanced)
+
+    #expect(morning.todayEstimatedMilliliters == 0)
+    #expect(morning.recentDailySummaries[1].estimatedMilliliters == 25)
+    #expect(morning.cycle == previousCycle)
+    #expect(morning.status == .dueAmbient)
+    #expect(morning.reminderLevel == .ambient)
+}
+
+@Test("cold launch on the next day preserves yesterday and pause without migration")
+func coldLaunchRebuildsDailySummariesFromDrinkRecords() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let yesterday = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 7, hour: 23, minute: 59)
+    )!
+    let clock = TestClock(now: yesterday)
+    let store = InMemoryHydrationStore()
+    let firstEngine = try HydrationEngine(
+        clock: clock,
+        store: store,
+        calendar: calendar
+    )
+    _ = try firstEngine.send(.recordProactiveSip)
+    _ = try firstEngine.send(.setPaused(true))
+
+    clock.now = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 8, hour: 8)
+    )!
+    let restarted = try HydrationEngine(
+        clock: clock,
+        store: store,
+        calendar: calendar
+    ).snapshot
+
+    #expect(restarted.todayEstimatedMilliliters == 0)
+    #expect(restarted.recentDailySummaries[1].estimatedMilliliters == 25)
+    #expect(restarted.records.count == 1)
+    #expect(restarted.status == .paused)
+}
+
+@Test("daily summaries use the current local timezone to interpret absolute records")
+func dailySummariesRebucketAcrossTimeZones() throws {
+    let recordTimestamp = Date(timeIntervalSince1970: 1_804_464_600)
+    let evaluatedAt = Date(timeIntervalSince1970: 1_804_506_000)
+    let settings = HydrationSettings()
+    let record = DrinkRecord(
+        id: UUID(),
+        timestamp: recordTimestamp,
+        sipEstimate: .regular,
+        sourceAction: .proactiveSip
+    )
+    let persistence = HydrationPersistence(
+        settings: settings,
+        records: [record],
+        cycle: HydrationCycle(
+            startedAt: recordTimestamp,
+            reminderInterval: settings.reminderInterval
+        )
+    )
+    var eastCalendar = Calendar(identifier: .gregorian)
+    eastCalendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    var westCalendar = Calendar(identifier: .gregorian)
+    westCalendar.timeZone = TimeZone(secondsFromGMT: -8 * 60 * 60)!
+
+    let east = try HydrationEngine(
+        clock: TestClock(now: evaluatedAt),
+        store: InMemoryHydrationStore(persistence: persistence),
+        calendar: eastCalendar
+    ).snapshot
+    let west = try HydrationEngine(
+        clock: TestClock(now: evaluatedAt),
+        store: InMemoryHydrationStore(persistence: persistence),
+        calendar: westCalendar
+    ).snapshot
+
+    #expect(east.todayEstimatedMilliliters == 25)
+    #expect(west.todayEstimatedMilliliters == 0)
+    #expect(west.recentDailySummaries[1].estimatedMilliliters == 25)
+}
+
+@Test("calendar day intervals retain every record on DST transition days")
+func dailySummariesRespectDSTDayLengths() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    let settings = HydrationSettings()
+    let localDates = [
+        (components: DateComponents(year: 2027, month: 3, day: 14, hour: 12), hours: 23),
+        (components: DateComponents(year: 2027, month: 11, day: 7, hour: 12), hours: 25)
+    ]
+
+    for localDate in localDates {
+        let evaluatedAt = calendar.date(from: localDate.components)!
+        let interval = try #require(calendar.dateInterval(of: .day, for: evaluatedAt))
+        let records = [
+            DrinkRecord(
+                id: UUID(),
+                timestamp: interval.start,
+                sipEstimate: .small,
+                sourceAction: .proactiveSip
+            ),
+            DrinkRecord(
+                id: UUID(),
+                timestamp: interval.end.addingTimeInterval(-1),
+                sipEstimate: .large,
+                sourceAction: .proactiveSip
+            )
+        ]
+        let snapshot = try HydrationEngine(
+            clock: TestClock(now: evaluatedAt),
+            store: InMemoryHydrationStore(
+                persistence: HydrationPersistence(
+                    settings: settings,
+                    records: records,
+                    cycle: HydrationCycle(
+                        startedAt: interval.start,
+                        reminderInterval: settings.reminderInterval
+                    )
+                )
+            ),
+            calendar: calendar
+        ).snapshot
+
+        #expect(interval.duration == TimeInterval(localDate.hours * 60 * 60))
+        #expect(snapshot.todayEstimatedMilliliters == 50)
+        #expect(snapshot.recentDailySummaries[0].recordCount == 2)
+    }
+}
+
 @Test("ordinary Codex activity cannot create or clear a hydration reminder")
 func ordinaryCodexActivityIsReadOnly() throws {
     let setup = Date(timeIntervalSince1970: 1_800_000_000)
@@ -1350,23 +1611,14 @@ func bottleCompletionAddsOnlyTheCheckpointDifference() throws {
         let settings = HydrationSettings(
             bottleCapacityMilliliters: testCase.capacity
         )
-        let existingRecords = (0..<(testCase.existing / 100)).map { _ in
+        let records = (0..<(testCase.existing / SipEstimate.regular.milliliters)).map { _ in
             DrinkRecord(
                 id: UUID(),
                 timestamp: start,
-                estimatedMilliliters: 100,
-                sourceAction: .bottleReconciliation
+                sipEstimate: .regular,
+                sourceAction: .proactiveSip
             )
         }
-        let remainder = testCase.existing % 100
-        let records = remainder == 0 ? existingRecords : existingRecords + [
-            DrinkRecord(
-                id: UUID(),
-                timestamp: start,
-                estimatedMilliliters: remainder,
-                sourceAction: .bottleReconciliation
-            )
-        ]
         let store = InMemoryHydrationStore(
             persistence: HydrationPersistence(
                 settings: settings,
@@ -1433,8 +1685,8 @@ func deliberateDrinkActionsEndStrongPresentation() throws {
     }
 }
 
-@Test("a bottle checkpoint uses only the current local day's records")
-func bottleCheckpointUsesLocalDayTotal() throws {
+@Test("a bottle checkpoint reconciles the current bottle across midnight")
+func bottleCheckpointIsIndependentFromLocalDayTotal() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
     let yesterday = calendar.date(
@@ -1443,20 +1695,30 @@ func bottleCheckpointUsesLocalDayTotal() throws {
     let today = calendar.date(
         from: DateComponents(year: 2027, month: 1, day: 5, hour: 0, minute: 10)
     )!
-    let records = [
+    let yesterdaySips = (0..<20).map { _ in
         DrinkRecord(
             id: UUID(),
             timestamp: yesterday,
-            estimatedMilliliters: 700,
-            sourceAction: .bottleReconciliation
-        ),
+            sipEstimate: .large,
+            sourceAction: .proactiveSip
+        )
+    }
+    let todaySips = (0..<5).map { _ in
         DrinkRecord(
             id: UUID(),
             timestamp: today,
-            estimatedMilliliters: 200,
-            sourceAction: .bottleReconciliation
+            sipEstimate: .large,
+            sourceAction: .proactiveSip
+        )
+    } + [
+        DrinkRecord(
+            id: UUID(),
+            timestamp: today,
+            sipEstimate: .regular,
+            sourceAction: .proactiveSip
         )
     ]
+    let records = yesterdaySips + todaySips
     let settings = HydrationSettings()
     let store = InMemoryHydrationStore(
         persistence: HydrationPersistence(
@@ -1476,8 +1738,8 @@ func bottleCheckpointUsesLocalDayTotal() throws {
 
     let reconciled = try engine.send(.completeBottle)
 
-    #expect(reconciled.records.last?.estimatedMilliliters == 800)
-    #expect(reconciled.todayEstimatedMilliliters == 1_000)
+    #expect(reconciled.records.last?.estimatedMilliliters == 100)
+    #expect(reconciled.todayEstimatedMilliliters == 300)
 }
 
 @Test("undoing a bottle completion removes only its adjustment and restores a paused cycle")

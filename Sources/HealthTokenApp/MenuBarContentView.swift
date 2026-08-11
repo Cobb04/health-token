@@ -40,6 +40,9 @@ struct MenuBarContentView: View {
         .padding(.bottom, 11)
         .frame(width: 264)
         .fixedSize(horizontal: true, vertical: true)
+        .onAppear {
+            model.refreshTemporalState()
+        }
     }
 
     private var header: some View {

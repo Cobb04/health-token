@@ -1,5 +1,6 @@
 import AppKit
 import HealthTokenCore
+import SwiftUI
 import Testing
 @testable import HealthTokenApp
 
@@ -391,6 +392,113 @@ func customBottleCapacityValidation() {
     #expect(BottleCapacityInput.parse("1.2 L") == nil)
 }
 
+@Test("hydration heatmap periods and bottle-relative intensities stay stable")
+func hydrationHeatmapPeriodAndIntensitySemantics() {
+    #expect(HydrationHeatmapPeriod.quarter.dayCount == 84)
+    #expect(HydrationHeatmapPeriod.year.dayCount == 365)
+    #expect(HydrationHeatmapPeriod.quarter.layout == .focusedQuarter)
+    #expect(HydrationHeatmapPeriod.year.layout == .yearOverview)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 0, bottleCapacity: 1_000, isAvailable: false) == .unavailable)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 0, bottleCapacity: 1_000, isAvailable: true) == .zero)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 999, bottleCapacity: 1_000, isAvailable: true) == .partialBottle)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 1_000, bottleCapacity: 1_000, isAvailable: true) == .oneBottle)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 1_999, bottleCapacity: 1_000, isAvailable: true) == .oneBottle)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 2_000, bottleCapacity: 1_000, isAvailable: true) == .twoBottles)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 2_999, bottleCapacity: 1_000, isAvailable: true) == .twoBottles)
+    #expect(HydrationHeatmapIntensity(estimatedMilliliters: 3_000, bottleCapacity: 1_000, isAvailable: true) == .threeOrMoreBottles)
+}
+
+@Test("quarter heatmap distinguishes unavailable and zero days with exact accessible values")
+func hydrationHeatmapPresentationUsesChronologicalDaysAndTrackingBoundary() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let today = calendar.date(
+        from: DateComponents(year: 2027, month: 8, day: 11, hour: 12)
+    )!
+    let summaries = try (0..<365).map { offset in
+        let day = try #require(calendar.date(byAdding: .day, value: -offset, to: today))
+        let interval = try #require(calendar.dateInterval(of: .day, for: day))
+        let amount = switch offset {
+        case 0: 700
+        case 1: 1_000
+        default: 0
+        }
+        return DailyHydrationSummary(
+            interval: interval,
+            estimatedMilliliters: amount,
+            recordCount: amount == 0 ? 0 : 1
+        )
+    }
+    let trackingStartedAt = try #require(
+        calendar.date(byAdding: .day, value: -2, to: today)
+    )
+
+    let presentation = DailyHydrationHeatmapPresentation(
+        summaries: summaries,
+        trackingStartedAt: trackingStartedAt,
+        period: .quarter,
+        bottleCapacity: 1_000,
+        calendar: calendar,
+        locale: Locale(identifier: "zh_CN")
+    )
+
+    try #require(presentation.days.count == 84)
+    #expect(presentation.days.first?.summary.interval.start == summaries[83].interval.start)
+    #expect(presentation.days.last?.summary.interval.start == summaries[0].interval.start)
+    #expect(presentation.days.first?.intensity == .unavailable)
+    #expect(presentation.days[81].intensity == .zero)
+    #expect(presentation.days.last?.intensity == .partialBottle)
+    #expect(presentation.todayAmount == "700 mL")
+    #expect(presentation.todayBottleEquivalent == "今天 · 约 0.7 瓶")
+    #expect(presentation.recentSevenDayTotal == "近 7 日 · 1.7 L")
+    #expect(presentation.days.first?.accessibilityLabel.contains("无数据") == true)
+    #expect(presentation.days[81].accessibilityLabel.contains("没有饮水记录") == true)
+    #expect(presentation.days.last?.accessibilityLabel.contains("记录约 700 毫升") == true)
+    #expect(presentation.days.last?.accessibilityLabel.contains("约 0.7 瓶") == true)
+}
+
+@Test("hydration heatmap layout respects the calendar week across a month boundary")
+func hydrationHeatmapLayoutUsesCalendarWeekGeometry() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    calendar.firstWeekday = 2
+    let firstDay = try #require(
+        calendar.date(from: DateComponents(year: 2026, month: 12, day: 28, hour: 12))
+    )
+    let days = try (0..<14).map { offset in
+        let date = try #require(calendar.date(byAdding: .day, value: offset, to: firstDay))
+        let interval = try #require(calendar.dateInterval(of: .day, for: date))
+        return HydrationHeatmapDay(
+            summary: DailyHydrationSummary(
+                interval: interval,
+                estimatedMilliliters: offset * 25,
+                recordCount: offset == 0 ? 0 : 1
+            ),
+            intensity: offset == 0 ? .zero : .partialBottle,
+            accessibilityLabel: "day \(offset)"
+        )
+    }
+    let today = try #require(days.last?.summary.interval.start)
+
+    let layout = HydrationHeatmapLayout(
+        days: days,
+        today: today,
+        calendar: calendar,
+        locale: Locale(identifier: "zh_CN")
+    )
+
+    try #require(layout.points.count == 14)
+    #expect(layout.weekCount == 2)
+    #expect(layout.points.first?.weekIndex == 0)
+    #expect(layout.points.first?.weekdayIndex == 0)
+    #expect(layout.points.last?.weekIndex == 1)
+    #expect(layout.points.last?.weekdayIndex == 6)
+    #expect(layout.points.last?.isToday == true)
+    #expect(layout.monthTicks.count == 1)
+    #expect(layout.monthTicks.map(\.weekIndex) == [0])
+    #expect(layout.weekdayLabels.count == 7)
+}
+
 @MainActor
 @Test("settings entry activates the accessory app before opening its single window")
 func settingsEntryMakesTheSettingsWindowVisible() {
@@ -403,6 +511,83 @@ func settingsEntryMakesTheSettingsWindowVisible() {
     presentation.present()
 
     #expect(actions == ["activate", "open"])
+}
+
+@MainActor
+@Test("settings renders the hydration heatmap without trapping")
+func settingsRendersHydrationHeatmapWithoutTrapping() throws {
+    let engine = try HydrationEngine(
+        clock: WindowTestClock(now: Date(timeIntervalSince1970: 1_800_000_000)),
+        store: InMemoryHydrationStore()
+    )
+    let model = HydrationAppModel(engine: engine, integrationHealth: .unavailable)
+    let hostingView = NSHostingView(
+        rootView: HealthTokenSettingsView(model: model)
+    )
+    hostingView.frame = NSRect(x: 0, y: 0, width: 430, height: 560)
+
+    hostingView.layoutSubtreeIfNeeded()
+
+    #expect(hostingView.fittingSize.width > 0)
+    #expect(hostingView.fittingSize.height > 0)
+}
+
+@MainActor
+@Test("opening the menu refreshes a stale yesterday snapshot")
+func temporalRefreshMovesYesterdayIntoHistory() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let yesterday = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 7, hour: 23, minute: 59)
+    )!
+    let clock = WindowTestClock(now: yesterday)
+    let engine = try HydrationEngine(
+        clock: clock,
+        store: InMemoryHydrationStore(),
+        calendar: calendar
+    )
+    _ = try engine.send(.recordProactiveSip)
+    let model = HydrationAppModel(engine: engine, integrationHealth: .unavailable)
+    let previousCycle = model.snapshot.cycle
+    #expect(model.snapshot.todayEstimatedMilliliters == 25)
+
+    clock.now = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 8, hour: 8)
+    )!
+    #expect(model.snapshot.todayEstimatedMilliliters == 25)
+
+    model.refreshTemporalState()
+
+    #expect(model.snapshot.todayEstimatedMilliliters == 0)
+    #expect(model.snapshot.recentDailySummaries[1].estimatedMilliliters == 25)
+    #expect(model.snapshot.cycle == previousCycle)
+}
+
+@MainActor
+@Test("calendar clock timezone locale and wake notifications share one refresh path")
+func temporalCoordinatorObservesEveryTimeBoundary() {
+    let center = NotificationCenter()
+    let workspaceCenter = NotificationCenter()
+    var refreshCount = 0
+    let coordinator = TemporalRefreshCoordinator(
+        notificationCenter: center,
+        workspaceNotificationCenter: workspaceCenter
+    ) {
+        refreshCount += 1
+    }
+    coordinator.start()
+
+    center.post(name: .NSCalendarDayChanged, object: nil)
+    center.post(name: .NSSystemClockDidChange, object: nil)
+    center.post(name: .NSSystemTimeZoneDidChange, object: nil)
+    center.post(name: NSLocale.currentLocaleDidChangeNotification, object: nil)
+    workspaceCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+
+    #expect(refreshCount == 5)
+    coordinator.stop()
+    center.post(name: .NSCalendarDayChanged, object: nil)
+    workspaceCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+    #expect(refreshCount == 5)
 }
 
 private let notchedDisplay = ReminderDisplayGeometry(

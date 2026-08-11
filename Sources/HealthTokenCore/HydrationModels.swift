@@ -253,6 +253,22 @@ public struct HydrationPersistence: Codable, Equatable, Sendable {
     }
 }
 
+public struct DailyHydrationSummary: Equatable, Sendable {
+    public let interval: DateInterval
+    public let estimatedMilliliters: Int
+    public let recordCount: Int
+
+    public init(
+        interval: DateInterval,
+        estimatedMilliliters: Int,
+        recordCount: Int
+    ) {
+        self.interval = interval
+        self.estimatedMilliliters = estimatedMilliliters
+        self.recordCount = recordCount
+    }
+}
+
 public struct HydrationSnapshot: Equatable, Sendable {
     public let status: HydrationStatus
     public let reminderLevel: ReminderLevel
@@ -261,6 +277,7 @@ public struct HydrationSnapshot: Equatable, Sendable {
     public let records: [DrinkRecord]
     public let cycle: HydrationCycle
     public let todayEstimatedMilliliters: Int
+    public let recentDailySummaries: [DailyHydrationSummary]
     public let remainingTimeUntilReminder: TimeInterval
     public let snoozedUntil: Date?
     public let undoableDrinkRecord: DrinkRecord?
@@ -273,6 +290,7 @@ public struct HydrationSnapshot: Equatable, Sendable {
         records: [DrinkRecord],
         cycle: HydrationCycle,
         todayEstimatedMilliliters: Int,
+        recentDailySummaries: [DailyHydrationSummary],
         remainingTimeUntilReminder: TimeInterval,
         snoozedUntil: Date?,
         undoableDrinkRecord: DrinkRecord?
@@ -284,6 +302,7 @@ public struct HydrationSnapshot: Equatable, Sendable {
         self.records = records
         self.cycle = cycle
         self.todayEstimatedMilliliters = todayEstimatedMilliliters
+        self.recentDailySummaries = recentDailySummaries
         self.remainingTimeUntilReminder = remainingTimeUntilReminder
         self.snoozedUntil = snoozedUntil
         self.undoableDrinkRecord = undoableDrinkRecord

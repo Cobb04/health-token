@@ -130,6 +130,10 @@ final class HydrationAppModel: ObservableObject {
         integrationHealth = currentIntegrationHealth(at: observedAt)
     }
 
+    func refreshTemporalState() {
+        send(.timeAdvanced)
+    }
+
     func openReminder() {
         send(.openReminder)
     }
