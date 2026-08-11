@@ -10,6 +10,12 @@ struct HealthTokenApp: App {
         MenuBarExtra("Health Token", systemImage: "drop.fill") {
             MenuBarContentView(model: appDelegate.model)
         }
+        .menuBarExtraStyle(.window)
+
+        Window("Health Token 设置", id: HealthTokenSettingsWindow.id) {
+            HealthTokenSettingsView(model: appDelegate.model)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -36,5 +42,6 @@ final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        panelController?.stop()
     }
 }

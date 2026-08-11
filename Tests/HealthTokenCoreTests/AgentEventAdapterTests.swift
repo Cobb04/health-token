@@ -260,6 +260,47 @@ func rolloutCompletionNormalizes() throws {
     #expect(!encodedText.contains("synthetic private output"))
 }
 
+@Test("Codex Desktop tool records normalize without retaining call payloads")
+func codexDesktopToolRecordsNormalize() throws {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let fixtures: [(String, AgentEvent.Kind, AgentToolClassification)] = [
+        (
+            #"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"ordinary-call","input":"synthetic private command"}}"#,
+            .toolUsed,
+            .ordinary
+        ),
+        (
+            #"{"type":"response_item","payload":{"type":"function_call","name":"update_plan","call_id":"plan-call","arguments":"synthetic private plan"}}"#,
+            .planUpdated,
+            .plan
+        ),
+        (
+            #"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"orchestrated-plan-call","input":"await tools.update_plan({plan:[{step:'synthetic private plan'}]})"}}"#,
+            .planUpdated,
+            .plan
+        )
+    ]
+
+    for (fixture, expectedKind, expectedClassification) in fixtures {
+        let event = try #require(
+            AgentEventAdapter.normalizeRolloutLine(
+                Data(fixture.utf8),
+                sessionID: "desktop-root",
+                role: .root,
+                observedAt: observedAt
+            )
+        )
+        let encoded = try JSONEncoder().encode(event)
+        let encodedText = try #require(String(data: encoded, encoding: .utf8))
+
+        #expect(event.kind == expectedKind)
+        #expect(event.toolClassification == expectedClassification)
+        #expect(!encodedText.contains("synthetic private"))
+        #expect(!encodedText.contains("ordinary-call"))
+        #expect(!encodedText.contains("plan-call"))
+    }
+}
+
 @Test("local user-input rollout records normalize without content")
 func rolloutUserInputNormalizesWithoutContent() throws {
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)

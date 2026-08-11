@@ -129,17 +129,39 @@ public enum AgentEventAdapter {
         let toolClassification: AgentToolClassification?
 
         if recordType == "response_item" {
-            guard
-                payload["type"] as? String == "function_call_output",
-                let callID = payload["call_id"] as? String,
-                pendingAttentionRequestIDs.remove(callID) != nil,
-                pendingAttentionRequestIDs.isEmpty
-            else {
+            guard let responseType = payload["type"] as? String else {
                 return nil
             }
-            kind = .attentionChanged
-            attention = .none
-            toolClassification = .userInput
+            if responseType == "function_call" || responseType == "custom_tool_call" {
+                guard
+                    let toolName = payload["name"] as? String,
+                    !toolName.isEmpty,
+                    !isMetadataTool(toolName)
+                else {
+                    return nil
+                }
+                if isPlanTool(toolName, payload: payload) {
+                    kind = .planUpdated
+                    toolClassification = .plan
+                } else {
+                    kind = .toolUsed
+                    toolClassification = isUserInputTool(toolName) ? .userInput : .ordinary
+                }
+                attention = .none
+            } else if responseType == "function_call_output" {
+                guard
+                    let callID = payload["call_id"] as? String,
+                    pendingAttentionRequestIDs.remove(callID) != nil,
+                    pendingAttentionRequestIDs.isEmpty
+                else {
+                    return nil
+                }
+                kind = .attentionChanged
+                attention = .none
+                toolClassification = .userInput
+            } else {
+                return nil
+            }
         } else if recordType == "event_msg",
                   let eventType = payload["type"] as? String {
             switch eventType {
@@ -216,6 +238,23 @@ public enum AgentEventAdapter {
             || normalized.contains("metadata")
             || normalized.contains("health_token")
             || normalized.contains("healthtoken")
+    }
+
+    private static func isPlanTool(
+        _ toolName: String,
+        payload: [String: Any]
+    ) -> Bool {
+        if toolName == "update_plan" || toolName.hasSuffix("__update_plan") {
+            return true
+        }
+        guard
+            (toolName == "exec" || toolName.hasSuffix("__exec")),
+            let input = payload["input"] as? String
+        else {
+            return false
+        }
+        return input.contains("tools.update_plan(")
+            || input.contains("tools.update_plan (")
     }
 
     private static func planClassification(

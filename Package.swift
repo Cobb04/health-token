@@ -25,6 +25,10 @@ let package = Package(
         .testTarget(
             name: "HealthTokenCoreTests",
             dependencies: ["HealthTokenCore"]
+        ),
+        .testTarget(
+            name: "HealthTokenAppTests",
+            dependencies: ["HealthTokenApp", "HealthTokenCore"]
         )
     ]
 )

@@ -18,15 +18,19 @@ public final class HydrationEngine {
         case openReminder
         case closeReminder
         case confirmSip
+        case recordProactiveSip
+        case completeBottle
+        case dismissConfirmation
         case agentEvent(AgentEvent)
         case agentObservationUnavailable
         case setSipEstimate(SipEstimate)
+        case setBottleCapacityMilliliters(Int)
         case setReminderInterval(TimeInterval)
         case snooze
         case setPaused(Bool)
         case setNoAgentFallbackEnabled(Bool)
         case agentActivity
-        case undoSip(UUID)
+        case undoDrink(UUID)
     }
 
     private let clock: any HydrationClock
@@ -38,6 +42,7 @@ public final class HydrationEngine {
     private var status: HydrationStatus
     private var agentAwarePresentation = false
     private var undoContext: UndoContext?
+    private var confirmationVisible = false
     private var agentSessions: [String: AgentSessionActivity] = [:]
 
     private struct AgentSessionActivity {
@@ -94,9 +99,8 @@ public final class HydrationEngine {
             settings: persistence.settings,
             records: persistence.records,
             cycle: persistence.cycle,
-            todayEstimatedMilliliters: persistence.records
-                .filter { calendar.isDate($0.timestamp, inSameDayAs: evaluatedAt) }
-                .reduce(0) { $0 + $1.estimatedMilliliters },
+            todayEstimatedMilliliters: todayEstimatedMilliliters,
+            remainingTimeUntilReminder: persistence.cycle.remainingTime(at: evaluatedAt),
             snoozedUntil: persistence.snoozedUntil,
             undoableDrinkRecord: undoableDrinkRecord
         )
@@ -108,6 +112,7 @@ public final class HydrationEngine {
         expireStaleAgentSessions()
         if undoContext?.expiresAt ?? .distantPast <= evaluatedAt {
             undoContext = nil
+            confirmationVisible = false
         }
         status = evaluatedStatus()
 
@@ -124,37 +129,33 @@ public final class HydrationEngine {
             guard snapshot.status.isHydrationDue else {
                 break
             }
-
-            let previousCycle = persistence.cycle
-            let previousSnoozedUntil = persistence.snoozedUntil
-            let previousAgentAwarePresentation = agentAwarePresentation
-            let record = DrinkRecord(
-                id: UUID(),
-                timestamp: evaluatedAt,
-                sipEstimate: persistence.settings.sipEstimate,
+            try recordDrink(
+                estimatedMilliliters: persistence.settings.sipEstimate.milliliters,
                 sourceAction: .sipConfirmation
             )
-            try persist { nextPersistence in
-                nextPersistence.records.append(record)
-                nextPersistence.cycle = HydrationCycle(
-                    startedAt: evaluatedAt,
-                    reminderInterval: nextPersistence.settings.reminderInterval
-                )
-                nextPersistence.snoozedUntil = nil
-            }
-            status = .accumulating
-            detailsExpanded = false
-            agentAwarePresentation = false
-            undoContext = UndoContext(
-                recordID: record.id,
-                previousCycle: previousCycle,
-                previousSnoozedUntil: previousSnoozedUntil,
-                previousAgentAwarePresentation: previousAgentAwarePresentation,
-                expiresAt: evaluatedAt.addingTimeInterval(10)
+        case .recordProactiveSip:
+            try recordDrink(
+                estimatedMilliliters: persistence.settings.sipEstimate.milliliters,
+                sourceAction: .proactiveSip
             )
+        case .completeBottle:
+            let capacity = persistence.settings.bottleCapacityMilliliters
+            let remainder = todayEstimatedMilliliters % capacity
+            let adjustment = remainder == 0 ? capacity : capacity - remainder
+            try recordDrink(
+                estimatedMilliliters: adjustment,
+                sourceAction: .bottleReconciliation
+            )
+        case .dismissConfirmation:
+            confirmationVisible = false
         case let .setSipEstimate(estimate):
             try persist { nextPersistence in
                 nextPersistence.settings.sipEstimate = estimate
+            }
+        case let .setBottleCapacityMilliliters(milliliters):
+            try persist { nextPersistence in
+                nextPersistence.settings.bottleCapacityMilliliters =
+                    HydrationSettings.normalizedBottleCapacity(milliliters)
             }
         case let .setReminderInterval(interval):
             let normalizedInterval = HydrationSettings.normalizedReminderInterval(interval)
@@ -200,7 +201,7 @@ public final class HydrationEngine {
             agentSessions.removeAll(keepingCapacity: false)
             agentAwarePresentation = false
             status = evaluatedStatus()
-        case let .undoSip(recordID):
+        case let .undoDrink(recordID):
             guard let context = activeUndoContext,
                   context.recordID == recordID,
                   persistence.records.contains(where: { $0.id == recordID }) else {
@@ -219,6 +220,7 @@ public final class HydrationEngine {
                 nextPersistence.snoozedUntil = context.previousSnoozedUntil
             }
             undoContext = nil
+            confirmationVisible = false
             agentAwarePresentation = context.previousAgentAwarePresentation
             status = evaluatedStatus()
             detailsExpanded = status.isHydrationDue
@@ -234,6 +236,46 @@ public final class HydrationEngine {
         mutation(&nextPersistence)
         try store.save(nextPersistence)
         persistence = nextPersistence
+    }
+
+    private func recordDrink(
+        estimatedMilliliters: Int,
+        sourceAction: DrinkRecord.SourceAction
+    ) throws {
+        let previousCycle = persistence.cycle
+        let previousSnoozedUntil = persistence.snoozedUntil
+        let previousAgentAwarePresentation = agentAwarePresentation
+        let record = DrinkRecord(
+            id: UUID(),
+            timestamp: evaluatedAt,
+            estimatedMilliliters: estimatedMilliliters,
+            sourceAction: sourceAction
+        )
+        try persist { nextPersistence in
+            nextPersistence.records.append(record)
+            nextPersistence.cycle = HydrationCycle(
+                startedAt: evaluatedAt,
+                reminderInterval: nextPersistence.settings.reminderInterval
+            )
+            nextPersistence.snoozedUntil = nil
+        }
+        status = evaluatedStatus()
+        detailsExpanded = false
+        agentAwarePresentation = false
+        confirmationVisible = true
+        undoContext = UndoContext(
+            recordID: record.id,
+            previousCycle: previousCycle,
+            previousSnoozedUntil: previousSnoozedUntil,
+            previousAgentAwarePresentation: previousAgentAwarePresentation,
+            expiresAt: evaluatedAt.addingTimeInterval(10)
+        )
+    }
+
+    private var todayEstimatedMilliliters: Int {
+        persistence.records
+            .filter { calendar.isDate($0.timestamp, inSameDayAs: evaluatedAt) }
+            .reduce(0) { $0 + $1.estimatedMilliliters }
     }
 
     private func evaluatedStatus() -> HydrationStatus {
@@ -256,7 +298,7 @@ public final class HydrationEngine {
     }
 
     private var reminderLevel: ReminderLevel {
-        if activeUndoContext != nil, status != .paused {
+        if activeUndoContext != nil, confirmationVisible {
             return .confirmation
         }
 

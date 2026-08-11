@@ -278,8 +278,8 @@ func undoRestoresPreviousDueContext() throws {
 
     let confirmed = try engine.send(.confirmSip)
     let recordID = try #require(confirmed.records.first?.id)
-    let undone = try engine.send(.undoSip(recordID))
-    let duplicateUndo = try engine.send(.undoSip(recordID))
+    let undone = try engine.send(.undoDrink(recordID))
+    let duplicateUndo = try engine.send(.undoDrink(recordID))
 
     #expect(confirmed.reminderLevel == .confirmation)
     #expect(confirmed.undoableDrinkRecord?.id == recordID)
@@ -302,7 +302,7 @@ func undoRestoresSnoozedContext() throws {
 
     let confirmed = try engine.send(.confirmSip)
     let recordID = try #require(confirmed.undoableDrinkRecord?.id)
-    let undone = try engine.send(.undoSip(recordID))
+    let undone = try engine.send(.undoDrink(recordID))
 
     #expect(undone.status == .snoozed)
     #expect(undone.snoozedUntil == snoozed.snoozedUntil)
@@ -322,7 +322,7 @@ func undoAffordanceExpires() throws {
     let stillUndoable = try engine.send(.timeAdvanced)
     clock.now.addTimeInterval(1)
     let expired = try engine.send(.timeAdvanced)
-    let lateUndo = try engine.send(.undoSip(recordID))
+    let lateUndo = try engine.send(.undoDrink(recordID))
 
     #expect(stillUndoable.reminderLevel == .confirmation)
     #expect(expired.reminderLevel == .hidden)
@@ -340,7 +340,7 @@ func undoRetainsIntervalSetting() throws {
     let recordID = try #require(confirmed.undoableDrinkRecord?.id)
 
     _ = try engine.send(.setReminderInterval(45 * 60))
-    let undone = try engine.send(.undoSip(recordID))
+    let undone = try engine.send(.undoDrink(recordID))
 
     #expect(undone.settings.reminderInterval == 45 * 60)
     #expect(undone.cycle.startedAt == setup)
@@ -1235,6 +1235,311 @@ func mixedHookAttentionWaitsForCorrelatedResolution() throws {
     }
 }
 
+@Test("daily acceptance flow returns to a new cycle after an approximate sip")
+func dailyAcceptanceFlowStartsNewCycle() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: start)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+
+    clock.now.addTimeInterval(30 * 60)
+    let dueB = try engine.send(.timeAdvanced)
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "acceptance-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    let qualifyingC = engine.snapshot
+    let needsUserB = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "acceptance-root",
+        at: clock.now,
+        attention: .required,
+        tool: .userInput
+    )))
+    _ = try engine.send(.agentEvent(agentEvent(
+        .attentionChanged,
+        sessionID: "acceptance-root",
+        at: clock.now,
+        attention: .none,
+        tool: .userInput
+    )))
+    for _ in 0..<3 {
+        _ = try engine.send(.agentEvent(agentEvent(
+            .toolUsed,
+            sessionID: "acceptance-root",
+            at: clock.now,
+            tool: .ordinary
+        )))
+    }
+    let freshC = engine.snapshot
+    let confirmed = try engine.send(.confirmSip)
+
+    #expect(dueB.reminderLevel == .ambient)
+    #expect(qualifyingC.reminderLevel == .strong)
+    #expect(needsUserB.reminderLevel == .ambient)
+    #expect(freshC.reminderLevel == .strong)
+    #expect(confirmed.todayEstimatedMilliliters == 25)
+    #expect(confirmed.records.last?.estimatedMilliliters == 25)
+    #expect(confirmed.cycle.startedAt == clock.now)
+    #expect(confirmed.status == .accumulating)
+}
+
+@Test("a proactive sip records while accumulating and can be dismissed without undoing")
+func proactiveSipIsIndependentFromReminderVisibility() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: start)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(4 * 60)
+
+    let recorded = try engine.send(.recordProactiveSip)
+    let recordID = try #require(recorded.undoableDrinkRecord?.id)
+    let dismissed = try engine.send(.dismissConfirmation)
+    let undone = try engine.send(.undoDrink(recordID))
+
+    #expect(recorded.records.count == 1)
+    #expect(recorded.records[0].sourceAction == .proactiveSip)
+    #expect(recorded.records[0].estimatedMilliliters == 25)
+    #expect(recorded.todayEstimatedMilliliters == 25)
+    #expect(recorded.cycle.startedAt == clock.now)
+    #expect(recorded.reminderLevel == .confirmation)
+    #expect(dismissed.reminderLevel == .hidden)
+    #expect(dismissed.undoableDrinkRecord?.id == recordID)
+    #expect(dismissed.todayEstimatedMilliliters == 25)
+    #expect(undone.records.isEmpty)
+    #expect(undone.cycle.startedAt == start)
+}
+
+@Test("a proactive sip clears snooze and preserves pause through record and undo")
+func proactiveSipPreservesPauseAndRestoresPreviousContext() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: start)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(30 * 60)
+    let snoozed = try engine.send(.snooze)
+    _ = try engine.send(.setPaused(true))
+
+    clock.now.addTimeInterval(2 * 60)
+    let recorded = try engine.send(.recordProactiveSip)
+    let recordID = try #require(recorded.undoableDrinkRecord?.id)
+    let undone = try engine.send(.undoDrink(recordID))
+
+    #expect(recorded.status == .paused)
+    #expect(recorded.reminderLevel == .confirmation)
+    #expect(recorded.snoozedUntil == nil)
+    #expect(recorded.cycle.startedAt == clock.now)
+    #expect(undone.status == .paused)
+    #expect(undone.snoozedUntil == snoozed.snoozedUntil)
+    #expect(undone.cycle.startedAt == start)
+}
+
+@Test("a bottle completion reconciles to the next strict capacity checkpoint")
+func bottleCompletionAddsOnlyTheCheckpointDifference() throws {
+    let cases = [
+        (capacity: 1_000, existing: 700, expectedAdjustment: 300, expectedTotal: 1_000),
+        (capacity: 1_000, existing: 1_200, expectedAdjustment: 800, expectedTotal: 2_000),
+        (capacity: 1_000, existing: 1_000, expectedAdjustment: 1_000, expectedTotal: 2_000),
+        (capacity: 500, existing: 1_200, expectedAdjustment: 300, expectedTotal: 1_500)
+    ]
+
+    for testCase in cases {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = TestClock(now: start)
+        let settings = HydrationSettings(
+            bottleCapacityMilliliters: testCase.capacity
+        )
+        let existingRecords = (0..<(testCase.existing / 100)).map { _ in
+            DrinkRecord(
+                id: UUID(),
+                timestamp: start,
+                estimatedMilliliters: 100,
+                sourceAction: .bottleReconciliation
+            )
+        }
+        let remainder = testCase.existing % 100
+        let records = remainder == 0 ? existingRecords : existingRecords + [
+            DrinkRecord(
+                id: UUID(),
+                timestamp: start,
+                estimatedMilliliters: remainder,
+                sourceAction: .bottleReconciliation
+            )
+        ]
+        let store = InMemoryHydrationStore(
+            persistence: HydrationPersistence(
+                settings: settings,
+                records: records,
+                cycle: HydrationCycle(
+                    startedAt: start,
+                    reminderInterval: settings.reminderInterval
+                )
+            )
+        )
+        let engine = try HydrationEngine(clock: clock, store: store)
+        clock.now.addTimeInterval(5 * 60)
+
+        let reconciled = try engine.send(.completeBottle)
+
+        #expect(reconciled.records.dropLast() == records[...])
+        #expect(reconciled.records.last?.sourceAction == .bottleReconciliation)
+        #expect(reconciled.records.last?.estimatedMilliliters == testCase.expectedAdjustment)
+        #expect(reconciled.todayEstimatedMilliliters == testCase.expectedTotal)
+        #expect(reconciled.cycle.startedAt == clock.now)
+    }
+}
+
+@Test("bottle capacity affects future checkpoints without changing sip estimate")
+func bottleCapacityIsIndependentFromSipEstimate() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: start)
+    let store = InMemoryHydrationStore()
+    let engine = try HydrationEngine(clock: clock, store: store)
+
+    let configured = try engine.send(.setBottleCapacityMilliliters(500))
+    let reconciled = try engine.send(.completeBottle)
+    let restarted = try HydrationEngine(clock: clock, store: store)
+
+    #expect(configured.settings.bottleCapacityMilliliters == 500)
+    #expect(reconciled.todayEstimatedMilliliters == 500)
+    #expect(reconciled.settings.sipEstimate == .regular)
+    #expect(restarted.snapshot.settings.bottleCapacityMilliliters == 500)
+}
+
+@Test("deliberate menu drink actions never retain a strong Codex presentation")
+func deliberateDrinkActionsEndStrongPresentation() throws {
+    for action in [HydrationEngine.Action.recordProactiveSip, .completeBottle] {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = TestClock(now: start)
+        let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+        clock.now.addTimeInterval(30 * 60)
+        for _ in 0..<3 {
+            _ = try engine.send(.agentEvent(agentEvent(
+                .toolUsed,
+                sessionID: "manual-drink-root",
+                at: clock.now,
+                tool: .ordinary
+            )))
+        }
+        #expect(engine.snapshot.reminderLevel == .strong)
+
+        let recorded = try engine.send(action)
+        let dismissed = try engine.send(.dismissConfirmation)
+
+        #expect(recorded.status == .accumulating)
+        #expect(recorded.reminderLevel == .confirmation)
+        #expect(dismissed.reminderLevel == .hidden)
+    }
+}
+
+@Test("a bottle checkpoint uses only the current local day's records")
+func bottleCheckpointUsesLocalDayTotal() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let yesterday = calendar.date(
+        from: DateComponents(year: 2027, month: 1, day: 4, hour: 23, minute: 50)
+    )!
+    let today = calendar.date(
+        from: DateComponents(year: 2027, month: 1, day: 5, hour: 0, minute: 10)
+    )!
+    let records = [
+        DrinkRecord(
+            id: UUID(),
+            timestamp: yesterday,
+            estimatedMilliliters: 700,
+            sourceAction: .bottleReconciliation
+        ),
+        DrinkRecord(
+            id: UUID(),
+            timestamp: today,
+            estimatedMilliliters: 200,
+            sourceAction: .bottleReconciliation
+        )
+    ]
+    let settings = HydrationSettings()
+    let store = InMemoryHydrationStore(
+        persistence: HydrationPersistence(
+            settings: settings,
+            records: records,
+            cycle: HydrationCycle(
+                startedAt: today,
+                reminderInterval: settings.reminderInterval
+            )
+        )
+    )
+    let engine = try HydrationEngine(
+        clock: TestClock(now: today),
+        store: store,
+        calendar: calendar
+    )
+
+    let reconciled = try engine.send(.completeBottle)
+
+    #expect(reconciled.records.last?.estimatedMilliliters == 800)
+    #expect(reconciled.todayEstimatedMilliliters == 1_000)
+}
+
+@Test("undoing a bottle completion removes only its adjustment and restores a paused cycle")
+func bottleCompletionUndoRestoresContext() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: start)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    _ = try engine.send(.recordProactiveSip)
+    clock.now.addTimeInterval(60)
+    _ = try engine.send(.setPaused(true))
+    let previousCycle = engine.snapshot.cycle
+
+    let reconciled = try engine.send(.completeBottle)
+    let adjustmentID = try #require(reconciled.undoableDrinkRecord?.id)
+    let undone = try engine.send(.undoDrink(adjustmentID))
+
+    #expect(reconciled.status == .paused)
+    #expect(reconciled.todayEstimatedMilliliters == 1_000)
+    #expect(undone.status == .paused)
+    #expect(undone.records.count == 1)
+    #expect(undone.todayEstimatedMilliliters == 25)
+    #expect(undone.cycle == previousCycle)
+}
+
+@Test("failed proactive and bottle saves leave hydration state unchanged")
+func deliberateDrinkActionsAreAtomicOnPersistenceFailure() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let settings = HydrationSettings()
+    let initial = HydrationPersistence(
+        settings: settings,
+        records: [],
+        cycle: HydrationCycle(
+            startedAt: start,
+            reminderInterval: settings.reminderInterval
+        )
+    )
+    let store = FailingHydrationStore(persistence: initial)
+    let engine = try HydrationEngine(clock: TestClock(now: start), store: store)
+    let before = engine.snapshot
+    store.shouldFailSave = true
+
+    #expect(throws: FailingHydrationStore.SaveError.self) {
+        try engine.send(.recordProactiveSip)
+    }
+    #expect(engine.snapshot == before)
+    #expect(throws: FailingHydrationStore.SaveError.self) {
+        try engine.send(.completeBottle)
+    }
+    #expect(engine.snapshot == before)
+}
+
+@Test("the snapshot derives countdown time from the existing hydration cycle")
+func snapshotProvidesExistingCycleCountdown() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(now: start)
+    let engine = try HydrationEngine(clock: clock, store: InMemoryHydrationStore())
+    clock.now.addTimeInterval(17 * 60 + 26)
+
+    let snapshot = try engine.send(.timeAdvanced)
+    #expect(snapshot.remainingTimeUntilReminder == TimeInterval(12 * 60 + 34))
+}
+
 private func agentEvent(
     _ kind: AgentEvent.Kind,
     sessionID: String,
@@ -1260,5 +1565,23 @@ private final class TestClock: HydrationClock {
 
     init(now: Date) {
         self.now = now
+    }
+}
+
+private final class FailingHydrationStore: HydrationStore {
+    enum SaveError: Error { case failed }
+
+    var persistence: HydrationPersistence?
+    var shouldFailSave = false
+
+    init(persistence: HydrationPersistence?) {
+        self.persistence = persistence
+    }
+
+    func load() throws -> HydrationPersistence? { persistence }
+
+    func save(_ persistence: HydrationPersistence) throws {
+        if shouldFailSave { throw SaveError.failed }
+        self.persistence = persistence
     }
 }

@@ -40,24 +40,38 @@ public enum SipEstimate: Int, Codable, CaseIterable, Equatable, Sendable {
 
 public struct HydrationSettings: Codable, Equatable, Sendable {
     public static let defaultReminderInterval: TimeInterval = 30 * 60
+    public static let defaultBottleCapacityMilliliters = 1_000
+    public static let reminderIntervalOptions: [TimeInterval] = [
+        15 * 60,
+        30 * 60,
+        45 * 60,
+        60 * 60
+    ]
+    public static let bottleCapacityOptions = [500, 750, 1_000, 1_500, 2_000]
 
     public var reminderInterval: TimeInterval
     public var sipEstimate: SipEstimate
+    public var bottleCapacityMilliliters: Int
     public var noAgentFallbackEnabled: Bool
 
     public init(
         reminderInterval: TimeInterval = Self.defaultReminderInterval,
         sipEstimate: SipEstimate = .regular,
+        bottleCapacityMilliliters: Int = Self.defaultBottleCapacityMilliliters,
         noAgentFallbackEnabled: Bool = true
     ) {
         self.reminderInterval = Self.normalizedReminderInterval(reminderInterval)
         self.sipEstimate = sipEstimate
+        self.bottleCapacityMilliliters = Self.normalizedBottleCapacity(
+            bottleCapacityMilliliters
+        )
         self.noAgentFallbackEnabled = noAgentFallbackEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
         case reminderInterval
         case sipEstimate
+        case bottleCapacityMilliliters
         case noAgentFallbackEnabled
     }
 
@@ -72,6 +86,10 @@ public struct HydrationSettings: Codable, Equatable, Sendable {
         )
         sipEstimate = (try? container.decode(SipEstimate.self, forKey: .sipEstimate))
             ?? .regular
+        bottleCapacityMilliliters = Self.normalizedBottleCapacity(
+            (try? container.decode(Int.self, forKey: .bottleCapacityMilliliters))
+                ?? Self.defaultBottleCapacityMilliliters
+        )
         noAgentFallbackEnabled = (try? container.decode(
             Bool.self,
             forKey: .noAgentFallbackEnabled
@@ -80,6 +98,12 @@ public struct HydrationSettings: Codable, Equatable, Sendable {
 
     public static func normalizedReminderInterval(_ interval: TimeInterval) -> TimeInterval {
         interval.isFinite && interval > 0 ? interval : defaultReminderInterval
+    }
+
+    public static func normalizedBottleCapacity(_ milliliters: Int) -> Int {
+        (100...5_000).contains(milliliters)
+            ? milliliters
+            : defaultBottleCapacityMilliliters
     }
 }
 
@@ -97,19 +121,27 @@ public struct HydrationCycle: Codable, Equatable, Sendable {
             ? .dueAmbient
             : .accumulating
     }
+
+    public func remainingTime(at date: Date) -> TimeInterval {
+        max(0, reminderInterval - date.timeIntervalSince(startedAt))
+    }
 }
 
 public struct DrinkRecord: Codable, Equatable, Identifiable, Sendable {
     public enum SourceAction: String, Codable, Equatable, Sendable {
         case sipConfirmation
+        case proactiveSip
+        case bottleReconciliation
     }
 
     public let id: UUID
     public let timestamp: Date
-    public let sipEstimate: SipEstimate
+    public let estimatedMilliliters: Int
     public let sourceAction: SourceAction
 
-    public var estimatedMilliliters: Int { sipEstimate.milliliters }
+    public var sipEstimate: SipEstimate? {
+        SipEstimate(rawValue: estimatedMilliliters)
+    }
 
     public init(
         id: UUID,
@@ -119,7 +151,19 @@ public struct DrinkRecord: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.id = id
         self.timestamp = timestamp
-        self.sipEstimate = sipEstimate
+        estimatedMilliliters = sipEstimate.milliliters
+        self.sourceAction = sourceAction
+    }
+
+    public init(
+        id: UUID,
+        timestamp: Date,
+        estimatedMilliliters: Int,
+        sourceAction: SourceAction
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.estimatedMilliliters = estimatedMilliliters
         self.sourceAction = sourceAction
     }
 
@@ -135,15 +179,22 @@ public struct DrinkRecord: Codable, Equatable, Identifiable, Sendable {
         id = try container.decode(UUID.self, forKey: .id)
         timestamp = try container.decode(Date.self, forKey: .timestamp)
         let milliliters = try container.decode(Int.self, forKey: .estimatedMilliliters)
-        guard let sipEstimate = SipEstimate(rawValue: milliliters) else {
+        sourceAction = try container.decode(SourceAction.self, forKey: .sourceAction)
+        let validAmount: Bool
+        switch sourceAction {
+        case .sipConfirmation, .proactiveSip:
+            validAmount = SipEstimate(rawValue: milliliters) != nil
+        case .bottleReconciliation:
+            validAmount = milliliters > 0
+        }
+        guard validAmount else {
             throw DecodingError.dataCorruptedError(
                 forKey: .estimatedMilliliters,
                 in: container,
-                debugDescription: "Drink records must retain a supported SipEstimate."
+                debugDescription: "Drink record amount is invalid for its source action."
             )
         }
-        self.sipEstimate = sipEstimate
-        sourceAction = try container.decode(SourceAction.self, forKey: .sourceAction)
+        estimatedMilliliters = milliliters
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -210,6 +261,7 @@ public struct HydrationSnapshot: Equatable, Sendable {
     public let records: [DrinkRecord]
     public let cycle: HydrationCycle
     public let todayEstimatedMilliliters: Int
+    public let remainingTimeUntilReminder: TimeInterval
     public let snoozedUntil: Date?
     public let undoableDrinkRecord: DrinkRecord?
 
@@ -221,6 +273,7 @@ public struct HydrationSnapshot: Equatable, Sendable {
         records: [DrinkRecord],
         cycle: HydrationCycle,
         todayEstimatedMilliliters: Int,
+        remainingTimeUntilReminder: TimeInterval,
         snoozedUntil: Date?,
         undoableDrinkRecord: DrinkRecord?
     ) {
@@ -231,6 +284,7 @@ public struct HydrationSnapshot: Equatable, Sendable {
         self.records = records
         self.cycle = cycle
         self.todayEstimatedMilliliters = todayEstimatedMilliliters
+        self.remainingTimeUntilReminder = remainingTimeUntilReminder
         self.snoozedUntil = snoozedUntil
         self.undoableDrinkRecord = undoableDrinkRecord
     }
