@@ -1,5 +1,6 @@
 import AppKit
 import HealthTokenCore
+import SwiftUI
 import Testing
 @testable import HealthTokenApp
 
@@ -507,6 +508,25 @@ func settingsEntryMakesTheSettingsWindowVisible() {
     presentation.present()
 
     #expect(actions == ["activate", "open"])
+}
+
+@MainActor
+@Test("settings renders the hydration heatmap without trapping")
+func settingsRendersHydrationHeatmapWithoutTrapping() throws {
+    let engine = try HydrationEngine(
+        clock: WindowTestClock(now: Date(timeIntervalSince1970: 1_800_000_000)),
+        store: InMemoryHydrationStore()
+    )
+    let model = HydrationAppModel(engine: engine, integrationHealth: .unavailable)
+    let hostingView = NSHostingView(
+        rootView: HealthTokenSettingsView(model: model)
+    )
+    hostingView.frame = NSRect(x: 0, y: 0, width: 430, height: 560)
+
+    hostingView.layoutSubtreeIfNeeded()
+
+    #expect(hostingView.fittingSize.width > 0)
+    #expect(hostingView.fittingSize.height > 0)
 }
 
 @MainActor

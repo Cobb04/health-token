@@ -147,8 +147,14 @@ struct DailyHydrationHeatmapView: View {
             RectangleMark(
                 xStart: .value("周", Double(point.weekIndex) + 0.10),
                 xEnd: .value("周", Double(point.weekIndex) + 0.90),
-                yStart: .value("星期", Double(point.weekdayIndex) + 0.10),
-                yEnd: .value("星期", Double(point.weekdayIndex) + 0.90)
+                yStart: .value(
+                    "星期",
+                    Double(plotWeekdayIndex(for: point.weekdayIndex)) + 0.10
+                ),
+                yEnd: .value(
+                    "星期",
+                    Double(plotWeekdayIndex(for: point.weekdayIndex)) + 0.90
+                )
             )
             .cornerRadius(cellCornerRadius)
             .foregroundStyle(color(for: point.day.intensity))
@@ -164,7 +170,7 @@ struct DailyHydrationHeatmapView: View {
             }
         }
         .chartXScale(domain: 0...Double(max(1, layout.weekCount)))
-        .chartYScale(domain: 7...0)
+        .chartYScale(domain: 0...7)
         .chartXAxis {
             AxisMarks(values: layout.monthTicks.map { Double($0.weekIndex) + 0.5 }) { value in
                 AxisValueLabel {
@@ -180,7 +186,7 @@ struct DailyHydrationHeatmapView: View {
                 AxisValueLabel {
                     if let position = value.as(Double.self) {
                         Text(weekdayLabel(
-                            at: Int(position.rounded(.down)),
+                            at: weekdayIndex(forPlotValue: position),
                             layout: layout
                         ))
                     }
@@ -301,6 +307,14 @@ struct DailyHydrationHeatmapView: View {
         return layout.weekdayLabels[index]
     }
 
+    private func plotWeekdayIndex(for weekdayIndex: Int) -> Int {
+        6 - weekdayIndex
+    }
+
+    private func weekdayIndex(forPlotValue value: Double) -> Int {
+        6 - Int(floor(value))
+    }
+
     private func updateHoveredDay(
         at location: CGPoint,
         proxy: ChartProxy,
@@ -316,7 +330,7 @@ struct DailyHydrationHeatmapView: View {
             return
         }
         let weekIndex = Int(floor(week))
-        let weekdayIndex = Int(floor(weekday))
+        let weekdayIndex = weekdayIndex(forPlotValue: weekday)
         hoveredDayID = layout.points.first {
             $0.weekIndex == weekIndex && $0.weekdayIndex == weekdayIndex
         }?.id
