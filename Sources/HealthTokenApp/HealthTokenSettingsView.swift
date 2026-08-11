@@ -7,11 +7,30 @@ struct HealthTokenSettingsView: View {
 
     var body: some View {
         Form {
-            Section("饮水") {
-                LabeledContent("今日估算总量") {
-                    Text("约 \(model.snapshot.todayEstimatedMilliliters) mL")
+            Section("每日饮水") {
+                ForEach(
+                    Array(model.snapshot.recentDailySummaries.enumerated()),
+                    id: \.element.interval.start
+                ) { offset, summary in
+                    let presentation = DailyHydrationHistoryPresentation(
+                        summary: summary,
+                        dayOffset: offset
+                    )
+                    LabeledContent(presentation.title) {
+                        Text(presentation.amount)
+                            .monospacedDigit()
+                            .foregroundStyle(
+                                summary.estimatedMilliliters == 0
+                                    ? Color.secondary
+                                    : Color.primary
+                            )
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(presentation.accessibilityLabel)
                 }
+            }
 
+            Section("饮水设置") {
                 Picker("每口估算", selection: sipEstimate) {
                     ForEach(SipEstimate.allCases, id: \.self) { estimate in
                         Text("约 \(estimate.milliliters) mL").tag(estimate)
@@ -82,7 +101,10 @@ struct HealthTokenSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 430, height: 440)
+        .frame(width: 430, height: 560)
+        .onAppear {
+            model.refreshTemporalState()
+        }
     }
 
     private var sipEstimate: Binding<SipEstimate> {

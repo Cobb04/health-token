@@ -391,6 +391,37 @@ func customBottleCapacityValidation() {
     #expect(BottleCapacityInput.parse("1.2 L") == nil)
 }
 
+@Test("daily hydration rows use concise labels and complete VoiceOver text")
+func dailyHydrationHistoryPresentationIsAccessible() {
+    let interval = DateInterval(
+        start: Date(timeIntervalSince1970: 1_800_000_000),
+        duration: 24 * 60 * 60
+    )
+    let today = DailyHydrationHistoryPresentation(
+        summary: DailyHydrationSummary(
+            interval: interval,
+            estimatedMilliliters: 1_070,
+            recordCount: 5
+        ),
+        dayOffset: 0
+    )
+    let yesterday = DailyHydrationHistoryPresentation(
+        summary: DailyHydrationSummary(
+            interval: interval,
+            estimatedMilliliters: 0,
+            recordCount: 0
+        ),
+        dayOffset: 1
+    )
+
+    #expect(today.title == "今天")
+    #expect(today.amount == "1070 mL")
+    #expect(today.accessibilityLabel == "今天，估算 1070 毫升")
+    #expect(yesterday.title == "昨天")
+    #expect(yesterday.amount == "0 mL")
+    #expect(yesterday.accessibilityLabel == "昨天，估算 0 毫升")
+}
+
 @MainActor
 @Test("settings entry activates the accessory app before opening its single window")
 func settingsEntryMakesTheSettingsWindowVisible() {
@@ -403,6 +434,64 @@ func settingsEntryMakesTheSettingsWindowVisible() {
     presentation.present()
 
     #expect(actions == ["activate", "open"])
+}
+
+@MainActor
+@Test("opening the menu refreshes a stale yesterday snapshot")
+func temporalRefreshMovesYesterdayIntoHistory() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let yesterday = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 7, hour: 23, minute: 59)
+    )!
+    let clock = WindowTestClock(now: yesterday)
+    let engine = try HydrationEngine(
+        clock: clock,
+        store: InMemoryHydrationStore(),
+        calendar: calendar
+    )
+    _ = try engine.send(.recordProactiveSip)
+    let model = HydrationAppModel(engine: engine, integrationHealth: .unavailable)
+    let previousCycle = model.snapshot.cycle
+    #expect(model.snapshot.todayEstimatedMilliliters == 25)
+
+    clock.now = calendar.date(
+        from: DateComponents(year: 2027, month: 3, day: 8, hour: 8)
+    )!
+    #expect(model.snapshot.todayEstimatedMilliliters == 25)
+
+    model.refreshTemporalState()
+
+    #expect(model.snapshot.todayEstimatedMilliliters == 0)
+    #expect(model.snapshot.recentDailySummaries[1].estimatedMilliliters == 25)
+    #expect(model.snapshot.cycle == previousCycle)
+}
+
+@MainActor
+@Test("calendar clock timezone locale and wake notifications share one refresh path")
+func temporalCoordinatorObservesEveryTimeBoundary() {
+    let center = NotificationCenter()
+    let workspaceCenter = NotificationCenter()
+    var refreshCount = 0
+    let coordinator = TemporalRefreshCoordinator(
+        notificationCenter: center,
+        workspaceNotificationCenter: workspaceCenter
+    ) {
+        refreshCount += 1
+    }
+    coordinator.start()
+
+    center.post(name: .NSCalendarDayChanged, object: nil)
+    center.post(name: .NSSystemClockDidChange, object: nil)
+    center.post(name: .NSSystemTimeZoneDidChange, object: nil)
+    center.post(name: NSLocale.currentLocaleDidChangeNotification, object: nil)
+    workspaceCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+
+    #expect(refreshCount == 5)
+    coordinator.stop()
+    center.post(name: .NSCalendarDayChanged, object: nil)
+    workspaceCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+    #expect(refreshCount == 5)
 }
 
 private let notchedDisplay = ReminderDisplayGeometry(
