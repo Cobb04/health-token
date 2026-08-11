@@ -52,10 +52,10 @@ Settings, the current hydration-cycle anchor, and drink records are stored at
 
 Use **启用 Codex 观察** in the menu bar to add Health Token's read-only
 handlers to `~/.codex/hooks.json`. Existing hook groups and handlers are
-preserved. Codex requires newly configured local hooks to be reviewed; after
-enabling, open `/hooks` in Codex and trust the Health Token command. Disabling
-observation removes only handlers whose command exactly matches Health Token's
-bundled helper.
+preserved. No slash command is required: after enabling observation, start a
+Codex task and Health Token confirms the connection from the first trusted hook
+or bounded local rollout event. Disabling observation removes only handlers
+whose command exactly matches Health Token's bundled helper.
 
 The menu bar also supports proactive one-sip records and bottle checkpoint
 reconciliation. Choose a common bottle preset or enter any whole-milliliter
@@ -76,9 +76,8 @@ The menu bar reports:
   enabled.
 - **Unavailable** when no supported local Codex installation is detected.
 
-The adapter follows the public [Codex hooks
-contract](https://developers.openai.com/codex/hooks). Rollout discovery visits
-at most 512 directory entries (to depth six), considers at most eight rollout
+The adapter normalizes local Codex hook events. Rollout discovery visits at
+most 512 directory entries (to depth six), considers at most eight rollout
 files modified during the previous ten minutes, and never scans the complete
 Codex history. Every poll may read at most 64 KiB from one file and 256 KiB in
 total, including an 8 KiB-per-file session-metadata prefix. One JSONL record

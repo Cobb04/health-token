@@ -53,8 +53,8 @@ struct CodexIntegrationPresentation {
             status = "Codex 观察：未启用"
             image = "circle"
             detail = noAgentFallbackEnabled
-                ? "启用后，在 Codex 中输入 /hooks 并允许 Health Token。普通定时饮水提醒仍会工作。"
-                : "启用后，在 Codex 中输入 /hooks 并允许 Health Token。你已关闭无 Agent 提醒。"
+                ? "启用后，Health Token 会自动配置本地连接。普通定时饮水提醒仍会工作。"
+                : "启用后，Health Token 会自动配置本地连接。你已关闭无 Agent 提醒。"
             return
         }
 
@@ -73,8 +73,8 @@ struct CodexIntegrationPresentation {
             status = "Codex 观察：等待首次事件"
             image = "clock"
             detail = noAgentFallbackEnabled
-                ? "在 Codex 中输入 /hooks，并允许 Health Token。连接前，普通定时饮水提醒仍会工作。"
-                : "在 Codex 中输入 /hooks，并允许 Health Token。连接前不会显示计时提醒。"
+                ? "配置已完成。开始一个 Codex 任务后会自动确认连接；普通定时饮水提醒仍会工作。"
+                : "配置已完成。开始一个 Codex 任务后会自动确认连接；连接前不会显示计时提醒。"
         case .unavailable:
             assertionFailure("Unavailable integrations return before enabled-state handling")
             status = "Codex 观察：不可用"
