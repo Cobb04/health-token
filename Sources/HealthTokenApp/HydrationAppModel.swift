@@ -2,6 +2,50 @@ import AppKit
 import Foundation
 import HealthTokenCore
 
+struct CodexCurrentActivity {
+    private var activeSessions: [String: Date] = [:]
+    private let staleInterval: TimeInterval
+
+    init(staleInterval: TimeInterval = 5 * 60) {
+        self.staleInterval = staleInterval
+    }
+
+    mutating func observe(_ events: [AgentEvent], at observedAt: Date) {
+        expire(at: observedAt)
+
+        for event in events {
+            switch event.kind {
+            case .sessionStarted, .promptSubmitted, .planUpdated, .toolUsed:
+                activeSessions[event.sessionID] = observedAt
+            case .attentionChanged where event.attention == .required:
+                activeSessions.removeValue(forKey: event.sessionID)
+            case .completed, .aborted, .sessionRemoved:
+                activeSessions.removeValue(forKey: event.sessionID)
+            case .attentionChanged:
+                break
+            }
+        }
+    }
+
+    func isActive(at evaluatedAt: Date) -> Bool {
+        activeSessions.values.contains { lastActivityAt in
+            let age = evaluatedAt.timeIntervalSince(lastActivityAt)
+            return age >= 0 && age <= staleInterval
+        }
+    }
+
+    mutating func reset() {
+        activeSessions.removeAll(keepingCapacity: false)
+    }
+
+    private mutating func expire(at evaluatedAt: Date) {
+        activeSessions = activeSessions.filter { _, lastActivityAt in
+            let age = evaluatedAt.timeIntervalSince(lastActivityAt)
+            return age >= 0 && age <= staleInterval
+        }
+    }
+}
+
 @MainActor
 final class HydrationAppModel: ObservableObject {
     @Published private(set) var snapshot: HydrationSnapshot
@@ -10,6 +54,7 @@ final class HydrationAppModel: ObservableObject {
     @Published private(set) var integrationError: String?
     @Published private(set) var isCodexObservationEnabled: Bool
     @Published private(set) var hasObservedCodexEvent = false
+    @Published private(set) var isCodexAgentActive = false
 
     private let engine: HydrationEngine
     private let hookInstaller: CodexHookInstaller
@@ -20,6 +65,7 @@ final class HydrationAppModel: ObservableObject {
     private var inboxError: String?
     private var observationActivity = CodexObservationActivity()
     private var eventSourceMerger = CodexEventSourceMerger()
+    private var currentCodexActivity = CodexCurrentActivity()
 
     private let connectionFreshnessInterval: TimeInterval = 2 * 60
 
@@ -113,12 +159,18 @@ final class HydrationAppModel: ObservableObject {
             for event in events {
                 snapshot = try engine.send(.agentEvent(event))
             }
+            currentCodexActivity.observe(events, at: observedAt)
+            isCodexAgentActive = currentCodexActivity.isActive(at: observedAt)
             if !isCodexObservationEnabled {
+                currentCodexActivity.reset()
+                isCodexAgentActive = false
                 snapshot = try engine.send(.agentObservationUnavailable)
             }
             inboxError = nil
         } catch {
             inboxError = "Codex 事件暂时无法读取；饮水提醒保持低干扰兜底。"
+            currentCodexActivity.reset()
+            isCodexAgentActive = false
             snapshot = (try? engine.send(.agentObservationUnavailable)) ?? snapshot
         }
         updateIntegrationError()
@@ -184,6 +236,8 @@ final class HydrationAppModel: ObservableObject {
             observationActivity.reset()
             eventSourceMerger.reset()
             hasObservedCodexEvent = false
+            currentCodexActivity.reset()
+            isCodexAgentActive = false
             rolloutMonitor.reset()
             configurationError = nil
         } catch {

@@ -181,6 +181,7 @@ struct HealthTokenSettingsView: View {
             health: model.integrationHealth,
             isObservationEnabled: model.isCodexObservationEnabled,
             hasObservedEvent: model.hasObservedCodexEvent,
+            isAgentActive: model.isCodexAgentActive,
             noAgentFallbackEnabled: model.snapshot.settings.noAgentFallbackEnabled
         )
     }

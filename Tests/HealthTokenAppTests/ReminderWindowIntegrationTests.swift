@@ -316,6 +316,84 @@ func CodexEventSourceMergerKeepsFallbackIndependent() {
     #expect(merged == [rolloutEvent])
 }
 
+@Test("Codex current activity ends on completion abort removal and timeout")
+func CodexCurrentActivityTracksLiveSessions() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let tool = AgentEvent(
+        kind: .toolUsed,
+        sessionID: "root",
+        timestamp: observedAt,
+        role: .root,
+        attention: .none,
+        toolClassification: .ordinary
+    )
+    var activity = CodexCurrentActivity()
+
+    activity.observe([tool], at: observedAt)
+    #expect(activity.isActive(at: observedAt))
+
+    activity.observe([
+        AgentEvent(
+            kind: .attentionChanged,
+            sessionID: "root",
+            timestamp: observedAt.addingTimeInterval(1),
+            role: .root,
+            attention: .required
+        )
+    ], at: observedAt.addingTimeInterval(1))
+    #expect(!activity.isActive(at: observedAt.addingTimeInterval(1)))
+    activity.observe([tool], at: observedAt.addingTimeInterval(2))
+
+    for (index, terminalKind) in [
+        AgentEvent.Kind.completed,
+        .aborted,
+        .sessionRemoved
+    ].enumerated() {
+        let terminalAt = observedAt.addingTimeInterval(TimeInterval(3 + index * 2))
+        activity.observe([
+            AgentEvent(
+                kind: terminalKind,
+                sessionID: "root",
+                timestamp: terminalAt,
+                role: .root,
+                attention: .none
+            )
+        ], at: terminalAt)
+        #expect(!activity.isActive(at: terminalAt))
+        activity.observe([tool], at: terminalAt.addingTimeInterval(1))
+    }
+
+    #expect(!activity.isActive(at: observedAt.addingTimeInterval(5 * 60 + 10)))
+}
+
+@Test("one completed session does not hide another active Codex session")
+func CodexCurrentActivityAggregatesSessions() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    var activity = CodexCurrentActivity()
+    let active = ["root-a", "root-b"].map { sessionID in
+        AgentEvent(
+            kind: .toolUsed,
+            sessionID: sessionID,
+            timestamp: observedAt,
+            role: .root,
+            attention: .none,
+            toolClassification: .ordinary
+        )
+    }
+    activity.observe(active, at: observedAt)
+    activity.observe([
+        AgentEvent(
+            kind: .completed,
+            sessionID: "root-a",
+            timestamp: observedAt.addingTimeInterval(1),
+            role: .root,
+            attention: .none
+        )
+    ], at: observedAt.addingTimeInterval(1))
+
+    #expect(activity.isActive(at: observedAt.addingTimeInterval(1)))
+}
+
 @Test("non-color cues name all reminder and integration states")
 func nonColorStateCues() {
     let states: [(HydrationStatus, ReminderLevel, CodexIntegrationHealth, String)] = [
@@ -373,30 +451,42 @@ func codexIntegrationUsesActionableLanguage() {
         health: .fallbackOnly,
         isObservationEnabled: true,
         hasObservedEvent: false,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
-    let fallback = CodexIntegrationPresentation(
+    let idleFallback = CodexIntegrationPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
         hasObservedEvent: true,
+        isAgentActive: false,
+        noAgentFallbackEnabled: true
+    )
+    let activeFallback = CodexIntegrationPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: true,
+        hasObservedEvent: true,
+        isAgentActive: true,
         noAgentFallbackEnabled: true
     )
     let disabled = CodexIntegrationPresentation(
         health: .fallbackOnly,
         isObservationEnabled: false,
         hasObservedEvent: false,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
     let connected = CodexIntegrationPresentation(
         health: .connected,
         isObservationEnabled: true,
         hasObservedEvent: true,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
     let unavailable = CodexIntegrationPresentation(
         health: .unavailable,
         isObservationEnabled: false,
         hasObservedEvent: false,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
 
@@ -410,18 +500,12 @@ func codexIntegrationUsesActionableLanguage() {
     #expect(disabled.status == "Codex 观察：未启用")
     #expect(disabled.detail.contains("自动配置本地连接"))
     #expect(!disabled.detail.contains("/hooks"))
-    #expect(fallback.status == "Codex 观察：运行中")
-    #expect(fallback.detail.contains("session"))
-    #expect(connected.status == "Codex 观察：实时事件已验证")
+    #expect(idleFallback.status == "Codex 观察：已就绪")
+    #expect(idleFallback.detail.contains("当前空闲"))
+    #expect(activeFallback.status == "Codex 观察：工作中")
+    #expect(connected.status == "Codex 观察：已就绪")
+    #expect(connected.detail.contains("实时事件已验证"))
     #expect(unavailable.status == "Codex 观察：不可用")
-    let distinctStatuses = Set([
-        waiting.status,
-        fallback.status,
-        disabled.status,
-        connected.status,
-        unavailable.status
-    ])
-    #expect(distinctStatuses.count == 5)
 }
 
 @Test("compact Codex status only appears for an actionable observation problem")

@@ -40,6 +40,7 @@ struct CodexIntegrationPresentation {
         health: CodexIntegrationHealth,
         isObservationEnabled: Bool,
         hasObservedEvent: Bool,
+        isAgentActive: Bool,
         noAgentFallbackEnabled: Bool
     ) {
         if health == .unavailable {
@@ -58,17 +59,28 @@ struct CodexIntegrationPresentation {
             return
         }
 
+        if isAgentActive {
+            status = "Codex 观察：工作中"
+            image = health == .connected
+                ? "checkmark.circle.fill"
+                : "checkmark.circle"
+            detail = noAgentFallbackEnabled
+                ? "检测到 Codex 正在工作；普通定时饮水提醒仍会工作。"
+                : "检测到 Codex 正在工作；你已关闭无 Agent 提醒。"
+            return
+        }
+
         switch health {
         case .connected:
-            status = "Codex 观察：实时事件已验证"
+            status = "Codex 观察：已就绪"
             image = "checkmark.circle.fill"
-            detail = "只读取工作状态，不读取提示词、代码或工具参数。"
+            detail = "实时事件已验证；当前空闲。只读取工作状态，不读取提示词、代码或工具参数。"
         case .fallbackOnly where hasObservedEvent:
-            status = "Codex 观察：运行中"
+            status = "Codex 观察：已就绪"
             image = "checkmark.circle"
             detail = noAgentFallbackEnabled
-                ? "本机 session 监听已识别 Codex 活动；普通定时饮水提醒仍会工作。"
-                : "本机 session 监听已识别 Codex 活动；你已关闭无 Agent 提醒。"
+                ? "本机 session 监听正常；当前空闲。普通定时饮水提醒仍会工作。"
+                : "本机 session 监听正常；当前空闲。你已关闭无 Agent 提醒。"
         case .fallbackOnly:
             status = "Codex 观察：已就绪"
             image = "checkmark.circle"
