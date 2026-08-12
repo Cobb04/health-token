@@ -15,8 +15,15 @@ struct CodexCurrentActivity {
 
         for event in events {
             switch event.kind {
-            case .sessionStarted, .promptSubmitted, .planUpdated, .toolUsed:
+            case .sessionStarted where event.role == .subagent,
+                 .promptSubmitted, .planUpdated:
                 activeSessions[event.sessionID] = observedAt
+            case .toolUsed where event.toolClassification == .ordinary:
+                activeSessions[event.sessionID] = observedAt
+            case .toolUsed:
+                activeSessions.removeValue(forKey: event.sessionID)
+            case .sessionStarted:
+                break
             case .attentionChanged where event.attention == .required:
                 activeSessions.removeValue(forKey: event.sessionID)
             case .completed, .aborted, .sessionRemoved:

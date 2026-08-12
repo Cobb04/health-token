@@ -48,8 +48,7 @@ public final class HydrationEngine {
     private struct AgentSessionActivity {
         var role: AgentRole
         var attention: AgentAttention
-        var qualifyingToolCount: Int
-        var hasActiveSubagentSignal: Bool
+        var hasActiveAgentSignal: Bool
         var lastActivityAt: Date
     }
 
@@ -364,7 +363,7 @@ public final class HydrationEngine {
 
     private var hasAutonomousAgentSignal: Bool {
         agentSessions.values.contains {
-            $0.hasActiveSubagentSignal || $0.qualifyingToolCount >= 3
+            $0.hasActiveAgentSignal
         }
     }
 
@@ -380,40 +379,43 @@ public final class HydrationEngine {
             agentSessions.removeValue(forKey: event.sessionID)
             return
         case .sessionStarted:
+            let canRecordAutonomousWork = !hasAttentionRequiredRootSession
             agentSessions[event.sessionID] = AgentSessionActivity(
                 role: event.role,
                 attention: .none,
-                qualifyingToolCount: 0,
-                hasActiveSubagentSignal: event.role == .subagent
-                    && status.isHydrationDue
-                    && !hasAttentionRequiredRootSession,
+                hasActiveAgentSignal: event.role == .subagent
+                    && canRecordAutonomousWork,
                 lastActivityAt: event.timestamp
             )
         case .promptSubmitted:
+            let canRecordAutonomousWork = !hasAttentionRequiredRootSession
             updateAgentSession(event) { activity in
                 activity.attention = .none
-                activity.qualifyingToolCount = 0
+                activity.hasActiveAgentSignal = canRecordAutonomousWork
             }
         case .attentionChanged:
             updateAgentSession(event) { activity in
                 activity.attention = event.attention
-                activity.qualifyingToolCount = 0
+                if event.attention == .required {
+                    activity.hasActiveAgentSignal = false
+                }
             }
             if event.role == .root && event.attention == .required {
                 invalidateAutonomousSignals()
             }
         case .planUpdated:
-            updateAgentSession(event) { _ in }
+            let canRecordAutonomousWork = !hasAttentionRequiredRootSession
+            updateAgentSession(event) { activity in
+                activity.hasActiveAgentSignal = canRecordAutonomousWork
+            }
         case .toolUsed:
             let canRecordAutonomousWork = !hasAttentionRequiredRootSession
             updateAgentSession(event) { activity in
                 if event.toolClassification == .ordinary,
                    canRecordAutonomousWork {
-                    activity.qualifyingToolCount = status.isHydrationDue
-                        ? activity.qualifyingToolCount + 1
-                        : 0
+                    activity.hasActiveAgentSignal = true
                 } else if event.toolClassification == .userInput {
-                    activity.qualifyingToolCount = 0
+                    activity.hasActiveAgentSignal = false
                 }
             }
         }
@@ -430,8 +432,7 @@ public final class HydrationEngine {
         var activity = agentSessions[event.sessionID] ?? AgentSessionActivity(
             role: event.role,
             attention: .none,
-            qualifyingToolCount: 0,
-            hasActiveSubagentSignal: false,
+            hasActiveAgentSignal: false,
             lastActivityAt: event.timestamp
         )
         activity.role = event.role
@@ -442,8 +443,7 @@ public final class HydrationEngine {
 
     private func invalidateAutonomousSignals() {
         for sessionID in agentSessions.keys {
-            agentSessions[sessionID]?.qualifyingToolCount = 0
-            agentSessions[sessionID]?.hasActiveSubagentSignal = false
+            agentSessions[sessionID]?.hasActiveAgentSignal = false
         }
     }
 

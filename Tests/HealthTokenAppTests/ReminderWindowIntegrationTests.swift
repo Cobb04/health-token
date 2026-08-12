@@ -329,8 +329,32 @@ func CodexCurrentActivityTracksLiveSessions() {
     )
     var activity = CodexCurrentActivity()
 
+    activity.observe([
+        AgentEvent(
+            kind: .sessionStarted,
+            sessionID: "root-open-only",
+            timestamp: observedAt,
+            role: .root,
+            attention: .none
+        )
+    ], at: observedAt)
+    #expect(!activity.isActive(at: observedAt))
+
     activity.observe([tool], at: observedAt)
     #expect(activity.isActive(at: observedAt))
+
+    activity.observe([
+        AgentEvent(
+            kind: .toolUsed,
+            sessionID: "root",
+            timestamp: observedAt.addingTimeInterval(1),
+            role: .root,
+            attention: .none,
+            toolClassification: .userInput
+        )
+    ], at: observedAt.addingTimeInterval(1))
+    #expect(!activity.isActive(at: observedAt.addingTimeInterval(1)))
+    activity.observe([tool], at: observedAt.addingTimeInterval(2))
 
     activity.observe([
         AgentEvent(

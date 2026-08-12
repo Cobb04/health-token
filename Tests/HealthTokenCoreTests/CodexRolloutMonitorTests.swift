@@ -137,6 +137,61 @@ func steadyStateDesktopToolCallsEmitActivity() throws {
     #expect(!encodedText.contains("live-call"))
 }
 
+@Test("a live Codex task start immediately escalates hydration that is already due")
+func liveTaskStartEscalatesDueHydration() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutURL = directory.appendingPathComponent("rollout-desktop-start.jsonl")
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:59:20Z","type":"session_meta","payload":{"id":"desktop-root","source":"app-server","cwd":"/synthetic/private/code"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    try appendRolloutLine(
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"private-turn","private":"synthetic private prompt"}}"#,
+        to: rolloutURL
+    )
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+    let event = try #require(events.first)
+    #expect(events.count == 1)
+    #expect(event.kind == .promptSubmitted)
+    let encoded = try #require(String(data: JSONEncoder().encode(event), encoding: .utf8))
+    #expect(!encoded.contains("private-turn"))
+    #expect(!encoded.contains("synthetic private prompt"))
+
+    let settings = HydrationSettings()
+    let engine = try HydrationEngine(
+        clock: RolloutTestClock(now: observedAt.addingTimeInterval(1)),
+        store: InMemoryHydrationStore(
+            persistence: HydrationPersistence(
+                settings: settings,
+                records: [],
+                cycle: HydrationCycle(
+                    startedAt: observedAt.addingTimeInterval(-settings.reminderInterval),
+                    reminderInterval: settings.reminderInterval
+                )
+            )
+        )
+    )
+    let reminder = try engine.send(.agentEvent(event))
+
+    #expect(reminder.status == .dueStrong)
+    #expect(reminder.reminderLevel == .strong)
+}
+
 @Test("large Codex Desktop session metadata still anchors live tool activity")
 func largeDesktopSessionMetadataAnchorsLiveActivity() throws {
     let directory = FileManager.default.temporaryDirectory
@@ -1171,6 +1226,14 @@ private func setModificationDate(_ date: Date, for url: URL) throws {
         [.modificationDate: date],
         ofItemAtPath: url.path
     )
+}
+
+private final class RolloutTestClock: HydrationClock {
+    var now: Date
+
+    init(now: Date) {
+        self.now = now
+    }
 }
 
 private func pollNewRollout(
