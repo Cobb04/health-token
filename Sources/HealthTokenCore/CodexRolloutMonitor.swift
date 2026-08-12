@@ -20,9 +20,9 @@ public struct CodexObservationLimits: Equatable, Sendable {
         maxCandidateFiles: Int = 8,
         maxScannedEntries: Int = 512,
         maxCandidateAge: TimeInterval = 10 * 60,
-        maxBytesPerFile: Int = 64 * 1024,
-        maxTotalBytesPerPoll: Int = 256 * 1024,
-        maxSessionMetadataBytes: Int = 32 * 1024,
+        maxBytesPerFile: Int = 4 * 1024 * 1024,
+        maxTotalBytesPerPoll: Int = 16 * 1024 * 1024,
+        maxSessionMetadataBytes: Int = 256 * 1024,
         maxRecordBytes: Int = 32 * 1024,
         maxPendingAttentionRequests: Int = 32,
         startupRecoveryInterval: TimeInterval = 2 * 60,
@@ -164,20 +164,17 @@ public final class CodexRolloutMonitor {
     }
 
     private struct Cursor {
-        static let empty = Cursor(
-            offset: 0,
-            sessionID: nil,
-            role: .root,
-            parentSessionID: nil
-        )
-
         var offset: UInt64
         var sessionID: String?
         var role: AgentRole
         var parentSessionID: String?
         var attentionCorrelation = AttentionCorrelation()
         var remainder = Data()
+        var discardingOversizedRecord = false
+        var isReadingFirstRecord = true
         var lastRecordTimestamp: Date?
+        var minimumEventTimestamp: Date?
+        var hasAnnouncedSubagent = false
     }
 
     private struct PollReadState {
@@ -226,6 +223,7 @@ public final class CodexRolloutMonitor {
     private let fileManager: FileManager
     private var cursors: [URL: Cursor] = [:]
     private var initialized = false
+    private var startedAt: Date?
     private var pollRotation = 0
 
     public init(
@@ -254,6 +252,9 @@ public final class CodexRolloutMonitor {
     }
 
     public func poll(observedAt: Date) throws -> [AgentEvent] {
+        if startedAt == nil {
+            startedAt = observedAt
+        }
         var readState = PollReadState()
         let rolloutURLs = try recentRolloutURLs(
             observedAt: observedAt,
@@ -290,6 +291,7 @@ public final class CodexRolloutMonitor {
     public func reset() {
         cursors.removeAll()
         initialized = false
+        startedAt = nil
         pollRotation = 0
         lastPollMetrics = CodexObservationMetrics()
     }
@@ -302,17 +304,22 @@ public final class CodexRolloutMonitor {
         var events: [AgentEvent] = []
         for rolloutURL in rolloutURLs {
             let size = try fileSize(of: rolloutURL)
-            let context = try sessionContext(
+            let metadata = try sessionContext(
                 in: rolloutURL,
                 size: size,
                 readState: &readState
             )
+            let context = metadata.context
+            let rootSessionID = metadata.hasIdentityMismatch
+                ? nil
+                : context?.sessionID ?? sessionIDFromRolloutFilename(rolloutURL)
             var cursor = Cursor(
                 offset: size,
-                sessionID: context?.sessionID,
+                sessionID: rootSessionID,
                 role: context?.role ?? .root,
                 parentSessionID: context?.parentSessionID
             )
+            cursor.isReadingFirstRecord = size == 0
             if let context,
                context.role == .root,
                let recovered = try recoverAttention(
@@ -364,17 +371,23 @@ public final class CodexRolloutMonitor {
 
         for rolloutURL in orderedURLs {
             let size = try fileSize(of: rolloutURL)
-            var cursor = cursors[rolloutURL] ?? .empty
+            var cursor = try cursors[rolloutURL] ?? liveAttachmentCursor(
+                for: rolloutURL,
+                size: size,
+                observedAt: observedAt,
+                readState: &readState
+            )
             if cursor.offset > size {
                 if cursor.sessionID != nil {
                     events.append(sessionRemovedEvent(from: cursor, observedAt: observedAt))
                 }
                 cursor = Cursor(
                     offset: size,
-                    sessionID: nil,
+                    sessionID: sessionIDFromRolloutFilename(rolloutURL),
                     role: .root,
                     parentSessionID: nil
                 )
+                cursor.isReadingFirstRecord = size == 0
                 cursors[rolloutURL] = cursor
                 continue
             }
@@ -389,42 +402,23 @@ public final class CodexRolloutMonitor {
                 continue
             }
 
-            if available > UInt64(limits.maxBytesPerFile) {
-                readState.metrics.discardedRecords += 1
-                failClosed(
-                    cursor: &cursor,
-                    newOffset: size,
-                    observedAt: observedAt,
-                    events: &events
-                )
-                cursors[rolloutURL] = cursor
-                continue
-            }
-
-            let requested = Int(available)
-            if requested > limits.maxTotalBytesPerPoll {
-                readState.metrics.discardedRecords += 1
-                failClosed(
-                    cursor: &cursor,
-                    newOffset: size,
-                    observedAt: observedAt,
-                    events: &events
-                )
-                cursors[rolloutURL] = cursor
-                continue
-            }
-            guard readState.allowedCount(
+            let requested = min(
+                Int(min(available, UInt64(Int.max))),
+                limits.maxBytesPerFile
+            )
+            let allowedCount = readState.allowedCount(
                 requested: requested,
                 for: rolloutURL,
                 limits: limits
-            ) == requested else {
+            )
+            guard allowedCount > 0 else {
                 cursors[rolloutURL] = cursor
                 continue
             }
             let chunk = try read(
                 rolloutURL,
                 offset: cursor.offset,
-                requestedCount: requested,
+                requestedCount: allowedCount,
                 readState: &readState
             )
             guard !chunk.isEmpty else {
@@ -432,36 +426,46 @@ public final class CodexRolloutMonitor {
                 continue
             }
             cursor.offset += UInt64(chunk.count)
-            let parsed = completeLines(in: chunk, remainder: &cursor.remainder)
+            let parsed = completeLines(
+                in: chunk,
+                remainder: &cursor.remainder,
+                discardingOversizedRecord: &cursor.discardingOversizedRecord,
+                isReadingFirstRecord: &cursor.isReadingFirstRecord
+            )
             readState.metrics.discardedRecords += parsed.discardedRecords
-            if parsed.discardedRecords > 0 {
-                failClosed(
-                    cursor: &cursor,
-                    newOffset: cursor.offset,
-                    observedAt: observedAt,
-                    events: &events
-                )
-                cursors[rolloutURL] = cursor
-                continue
-            }
             let malformedRecordCount = parsed.lines.filter {
                 !isStructurallyValidRecord($0)
             }.count
-            if malformedRecordCount > 0 {
-                readState.metrics.discardedRecords += malformedRecordCount
-                failClosed(
-                    cursor: &cursor,
-                    newOffset: cursor.offset,
-                    observedAt: observedAt,
-                    events: &events
-                )
-                cursors[rolloutURL] = cursor
-                continue
-            }
+            readState.metrics.discardedRecords += malformedRecordCount
+            let batchHasAmbiguousFraming = parsed.hasPartialRecord
+                || parsed.discardedRecords > 0
+                || malformedRecordCount > 0
 
             for line in parsed.lines {
+                guard isStructurallyValidRecord(line) else { continue }
                 readState.metrics.recordsParsed += 1
-                if let context = sessionContext(from: line) {
+                if let minimumEventTimestamp = cursor.minimumEventTimestamp {
+                    guard let timestamp = recordTimestamp(from: line),
+                          timestamp >= minimumEventTimestamp
+                    else {
+                        continue
+                    }
+                }
+                let filenameSessionID = sessionIDFromRolloutFilename(rolloutURL)
+                if hasMismatchedSessionIdentity(
+                    in: line,
+                    expectedSessionID: filenameSessionID
+                ) {
+                    cursor.sessionID = nil
+                    cursor.role = .root
+                    cursor.parentSessionID = nil
+                    cursor.attentionCorrelation.reset()
+                    continue
+                }
+                if let context = sessionContext(
+                    from: line,
+                    expectedSessionID: filenameSessionID
+                ) {
                     let timestamp = recordTimestamp(from: line)
                     let isOrdered = timestamp.map { timestamp in
                         cursor.lastRecordTimestamp.map { lastTimestamp in
@@ -472,7 +476,7 @@ public final class CodexRolloutMonitor {
                         let age = observedAt.timeIntervalSince($0)
                         return age >= 0 && age <= limits.activeSessionInterval
                     } ?? false
-                    let canStartSubagent = !parsed.hasPartialRecord
+                    let canStartSubagent = !batchHasAmbiguousFraming
                         && context.role == .subagent
                         && isOrdered
                         && isRecent
@@ -484,6 +488,11 @@ public final class CodexRolloutMonitor {
                             parentSessionID: nil
                         )
                     let isNewSession = cursor.sessionID != effectiveContext.sessionID
+                    let isNewSubagentIdentity = canStartSubagent
+                        && (!cursor.hasAnnouncedSubagent
+                            || isNewSession
+                            || cursor.role != .subagent
+                            || cursor.parentSessionID != effectiveContext.parentSessionID)
                     if isNewSession {
                         cursor.attentionCorrelation.reset()
                     }
@@ -493,11 +502,12 @@ public final class CodexRolloutMonitor {
                     if let timestamp, isOrdered {
                         cursor.lastRecordTimestamp = timestamp
                     }
-                    if isNewSession, canStartSubagent {
+                    if isNewSubagentIdentity {
                         events.append(sessionStartedEvent(
                             for: effectiveContext,
                             observedAt: observedAt
                         ))
+                        cursor.hasAnnouncedSubagent = true
                     }
                     continue
                 }
@@ -517,6 +527,11 @@ public final class CodexRolloutMonitor {
                 ) {
                     events.append(event)
                 }
+            }
+            if cursor.offset >= size,
+               cursor.remainder.isEmpty,
+               !cursor.discardingOversizedRecord {
+                cursor.minimumEventTimestamp = nil
             }
             cursors[rolloutURL] = cursor
         }
@@ -585,7 +600,11 @@ public final class CodexRolloutMonitor {
         in url: URL,
         size: UInt64,
         readState: inout PollReadState
-    ) throws -> SessionContext? {
+    ) throws -> (
+        context: SessionContext?,
+        hasIdentityMismatch: Bool,
+        timestamp: Date?
+    ) {
         let chunkBytes = 8 * 1024
         var prefix = Data()
         while prefix.count < limits.maxSessionMetadataBytes,
@@ -605,18 +624,70 @@ public final class CodexRolloutMonitor {
                 requestedCount: requested,
                 readState: &readState
             )
-            guard !chunk.isEmpty else { return nil }
+            guard !chunk.isEmpty else { return (nil, false, nil) }
             prefix.append(chunk)
             guard let newline = prefix.firstIndex(of: 0x0A) else { continue }
             let line = Data(prefix[..<newline])
-            guard line.count <= limits.maxRecordBytes else { return nil }
-            return sessionContext(from: line)
+            guard line.count <= limits.maxSessionMetadataBytes else {
+                return (nil, false, nil)
+            }
+            let expectedSessionID = sessionIDFromRolloutFilename(url)
+            let hasMismatch = hasMismatchedSessionIdentity(
+                in: line,
+                expectedSessionID: expectedSessionID
+            )
+            return (
+                hasMismatch ? nil : sessionContext(
+                    from: line,
+                    expectedSessionID: expectedSessionID
+                ),
+                hasMismatch,
+                recordTimestamp(from: line)
+            )
         }
-        return nil
+        return (nil, false, nil)
     }
 
-    private func sessionContext(from data: Data) -> SessionContext? {
-        guard data.count <= limits.maxRecordBytes,
+    private func liveAttachmentCursor(
+        for url: URL,
+        size: UInt64,
+        observedAt: Date,
+        readState: inout PollReadState
+    ) throws -> Cursor {
+        let metadata = try sessionContext(
+            in: url,
+            size: size,
+            readState: &readState
+        )
+        let replayBoundary = (startedAt ?? observedAt).addingTimeInterval(-1.5)
+        let isPreexisting = metadata.timestamp.map { $0 < replayBoundary } ?? false
+        let tailBudget = min(limits.maxBytesPerFile, limits.maxTotalBytesPerPoll)
+        let initialOffset: UInt64
+        if isPreexisting, size > UInt64(tailBudget) {
+            initialOffset = size - UInt64(tailBudget)
+        } else {
+            initialOffset = 0
+        }
+        let sessionID = metadata.hasIdentityMismatch
+            ? nil
+            : metadata.context?.sessionID ?? sessionIDFromRolloutFilename(url)
+        var cursor = Cursor(
+            offset: initialOffset,
+            sessionID: sessionID,
+            role: metadata.context?.role ?? .root,
+            parentSessionID: metadata.context?.parentSessionID
+        )
+        cursor.discardingOversizedRecord = initialOffset > 0
+        cursor.isReadingFirstRecord = initialOffset == 0
+        cursor.minimumEventTimestamp = isPreexisting ? replayBoundary : nil
+        return cursor
+    }
+
+    private func sessionContext(
+        from data: Data,
+        expectedSessionID: String? = nil
+    ) -> SessionContext? {
+        guard data.count <= limits.maxSessionMetadataBytes,
               let object = try? JSONSerialization.jsonObject(with: data),
               let record = object as? [String: Any],
               record["type"] as? String == "session_meta",
@@ -626,12 +697,32 @@ public final class CodexRolloutMonitor {
         else {
             return nil
         }
+        if let expectedSessionID, sessionID != expectedSessionID {
+            return nil
+        }
         let parentSessionID = verifiedParentSessionID(in: payload)
         return SessionContext(
             sessionID: sessionID,
             role: parentSessionID == nil ? .root : .subagent,
             parentSessionID: parentSessionID
         )
+    }
+
+    private func hasMismatchedSessionIdentity(
+        in data: Data,
+        expectedSessionID: String?
+    ) -> Bool {
+        guard let expectedSessionID,
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let record = object as? [String: Any],
+              record["type"] as? String == "session_meta",
+              let payload = record["payload"] as? [String: Any],
+              let sessionID = payload["id"] as? String,
+              isValidOpaqueID(sessionID)
+        else {
+            return false
+        }
+        return sessionID != expectedSessionID
     }
 
     private func verifiedParentSessionID(in payload: [String: Any]) -> String? {
@@ -644,6 +735,14 @@ public final class CodexRolloutMonitor {
             return nil
         }
         return parentSessionID
+    }
+
+    private func sessionIDFromRolloutFilename(_ url: URL) -> String? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard stem.hasPrefix("rollout-"), stem.count >= 36 else { return nil }
+        let candidate = String(stem.suffix(36))
+        guard UUID(uuidString: candidate) != nil else { return nil }
+        return candidate
     }
 
     private func isValidOpaqueID(_ value: String) -> Bool {
@@ -835,58 +934,67 @@ public final class CodexRolloutMonitor {
 
     private func completeLines(
         in chunk: Data,
-        remainder: inout Data
+        remainder: inout Data,
+        discardingOversizedRecord: inout Bool,
+        isReadingFirstRecord: inout Bool
     ) -> (
         lines: [Data],
         discardedRecords: Int,
         hasPartialRecord: Bool
     ) {
-        var combined = remainder
-        combined.append(chunk)
-        var pieces = combined.split(
-            separator: 0x0A,
-            omittingEmptySubsequences: false
-        )
-        let incomplete: Data?
-        if combined.last == 0x0A {
-            incomplete = nil
-            pieces.removeLast()
-        } else {
-            incomplete = pieces.isEmpty ? Data() : Data(pieces.removeLast())
-        }
-
         var discardedRecords = 0
         var lines: [Data] = []
-        for piece in pieces where !piece.isEmpty {
-            if piece.count > limits.maxRecordBytes {
+        var start = chunk.startIndex
+
+        while start < chunk.endIndex {
+            if discardingOversizedRecord {
+                guard let newline = chunk[start...].firstIndex(of: 0x0A) else {
+                    return (lines, discardedRecords, true)
+                }
+                discardingOversizedRecord = false
+                start = chunk.index(after: newline)
+                continue
+            }
+
+            let recordLimit = isReadingFirstRecord
+                ? limits.maxSessionMetadataBytes
+                : limits.maxRecordBytes
+            guard let newline = chunk[start...].firstIndex(of: 0x0A) else {
+                let suffix = chunk[start...]
+                if remainder.count + suffix.count > recordLimit {
+                    remainder.removeAll(keepingCapacity: false)
+                    discardingOversizedRecord = true
+                    isReadingFirstRecord = false
+                    discardedRecords += 1
+                } else {
+                    remainder.append(contentsOf: suffix)
+                }
+                return (
+                    lines,
+                    discardedRecords,
+                    !remainder.isEmpty || discardingOversizedRecord
+                )
+            }
+
+            let segment = chunk[start..<newline]
+            if remainder.count + segment.count > recordLimit {
+                remainder.removeAll(keepingCapacity: false)
                 discardedRecords += 1
             } else {
-                lines.append(Data(piece))
+                remainder.append(contentsOf: segment)
+                if !remainder.isEmpty {
+                    lines.append(remainder)
+                }
+                remainder = Data()
             }
+            isReadingFirstRecord = false
+            start = chunk.index(after: newline)
         }
-        if let incomplete, incomplete.count > limits.maxRecordBytes {
-            remainder = Data()
-            discardedRecords += 1
-        } else {
-            remainder = incomplete ?? Data()
-        }
-        return (lines, discardedRecords, !remainder.isEmpty)
-    }
 
-    private func failClosed(
-        cursor: inout Cursor,
-        newOffset: UInt64,
-        observedAt: Date,
-        events: inout [AgentEvent]
-    ) {
-        if cursor.sessionID != nil {
-            events.append(sessionRemovedEvent(from: cursor, observedAt: observedAt))
-        }
-        cursor = Cursor(
-            offset: newOffset,
-            sessionID: nil,
-            role: .root,
-            parentSessionID: nil
+        return (
+            lines,
+            discardedRecords,
+            !remainder.isEmpty || discardingOversizedRecord
         )
     }
 

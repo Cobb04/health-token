@@ -224,29 +224,198 @@ func compactReminderPresentation() {
     #expect(presentation.snoozeActionTitle == "15 分钟")
 }
 
-@Test("a privacy-safe rollout event establishes Codex connection freshness")
-func rolloutEventEstablishesConnectionFreshness() {
+@Test("rollout activity stays distinct from verified official hook activity")
+func observationActivityTracksSourcesSeparately() {
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
     var activity = CodexObservationActivity()
 
     activity.record(
         hookEventCount: 0,
-        rolloutEventCount: 1,
         observedAt: observedAt
     )
 
     #expect(
-        activity.wasObservedRecently(
+        !activity.wasOfficialHookObservedRecently(
             at: observedAt.addingTimeInterval(119),
             freshnessInterval: 120
         )
     )
+    activity.record(
+        hookEventCount: 1,
+        observedAt: observedAt.addingTimeInterval(120)
+    )
     #expect(
-        !activity.wasObservedRecently(
+        activity.wasOfficialHookObservedRecently(
             at: observedAt.addingTimeInterval(121),
             freshnessInterval: 120
         )
     )
+}
+
+@Test("recent official hooks suppress duplicate rollout work but not completion rescue")
+func CodexEventSourceMergerPrefersOfficialHooks() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let hookTools = (0..<3).map { offset in
+        AgentEvent(
+            kind: .toolUsed,
+            sessionID: "root",
+            timestamp: observedAt.addingTimeInterval(Double(offset)),
+            role: .root,
+            attention: .none,
+            toolClassification: .ordinary
+        )
+    }
+    let rolloutTools = hookTools.map {
+        AgentEvent(
+            kind: $0.kind,
+            sessionID: $0.sessionID,
+            timestamp: $0.timestamp.addingTimeInterval(0.1),
+            role: $0.role,
+            attention: $0.attention,
+            toolClassification: $0.toolClassification
+        )
+    }
+    let completion = AgentEvent(
+        kind: .completed,
+        sessionID: "root",
+        timestamp: observedAt.addingTimeInterval(4),
+        role: .root,
+        attention: .none
+    )
+    var merger = CodexEventSourceMerger()
+
+    let merged = merger.merge(
+        hookEvents: hookTools,
+        rolloutEvents: rolloutTools + [completion],
+        observedAt: observedAt
+    )
+
+    #expect(merged.map(\.kind) == [.toolUsed, .toolUsed, .toolUsed, .completed])
+    #expect(merged.filter { $0.kind == .toolUsed }.count == 3)
+}
+
+@Test("rollout remains active when no official hook has reached the app")
+func CodexEventSourceMergerKeepsFallbackIndependent() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutEvent = AgentEvent(
+        kind: .toolUsed,
+        sessionID: "fallback-root",
+        timestamp: observedAt,
+        role: .root,
+        attention: .none,
+        toolClassification: .ordinary
+    )
+    var merger = CodexEventSourceMerger()
+
+    let merged = merger.merge(
+        hookEvents: [],
+        rolloutEvents: [rolloutEvent],
+        observedAt: observedAt
+    )
+
+    #expect(merged == [rolloutEvent])
+}
+
+@Test("Codex current activity ends on completion abort removal and timeout")
+func CodexCurrentActivityTracksLiveSessions() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let tool = AgentEvent(
+        kind: .toolUsed,
+        sessionID: "root",
+        timestamp: observedAt,
+        role: .root,
+        attention: .none,
+        toolClassification: .ordinary
+    )
+    var activity = CodexCurrentActivity()
+
+    activity.observe([
+        AgentEvent(
+            kind: .sessionStarted,
+            sessionID: "root-open-only",
+            timestamp: observedAt,
+            role: .root,
+            attention: .none
+        )
+    ], at: observedAt)
+    #expect(!activity.isActive(at: observedAt))
+
+    activity.observe([tool], at: observedAt)
+    #expect(activity.isActive(at: observedAt))
+
+    activity.observe([
+        AgentEvent(
+            kind: .toolUsed,
+            sessionID: "root",
+            timestamp: observedAt.addingTimeInterval(1),
+            role: .root,
+            attention: .none,
+            toolClassification: .userInput
+        )
+    ], at: observedAt.addingTimeInterval(1))
+    #expect(!activity.isActive(at: observedAt.addingTimeInterval(1)))
+    activity.observe([tool], at: observedAt.addingTimeInterval(2))
+
+    activity.observe([
+        AgentEvent(
+            kind: .attentionChanged,
+            sessionID: "root",
+            timestamp: observedAt.addingTimeInterval(1),
+            role: .root,
+            attention: .required
+        )
+    ], at: observedAt.addingTimeInterval(1))
+    #expect(!activity.isActive(at: observedAt.addingTimeInterval(1)))
+    activity.observe([tool], at: observedAt.addingTimeInterval(2))
+
+    for (index, terminalKind) in [
+        AgentEvent.Kind.completed,
+        .aborted,
+        .sessionRemoved
+    ].enumerated() {
+        let terminalAt = observedAt.addingTimeInterval(TimeInterval(3 + index * 2))
+        activity.observe([
+            AgentEvent(
+                kind: terminalKind,
+                sessionID: "root",
+                timestamp: terminalAt,
+                role: .root,
+                attention: .none
+            )
+        ], at: terminalAt)
+        #expect(!activity.isActive(at: terminalAt))
+        activity.observe([tool], at: terminalAt.addingTimeInterval(1))
+    }
+
+    #expect(!activity.isActive(at: observedAt.addingTimeInterval(5 * 60 + 10)))
+}
+
+@Test("one completed session does not hide another active Codex session")
+func CodexCurrentActivityAggregatesSessions() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    var activity = CodexCurrentActivity()
+    let active = ["root-a", "root-b"].map { sessionID in
+        AgentEvent(
+            kind: .toolUsed,
+            sessionID: sessionID,
+            timestamp: observedAt,
+            role: .root,
+            attention: .none,
+            toolClassification: .ordinary
+        )
+    }
+    activity.observe(active, at: observedAt)
+    activity.observe([
+        AgentEvent(
+            kind: .completed,
+            sessionID: "root-a",
+            timestamp: observedAt.addingTimeInterval(1),
+            role: .root,
+            attention: .none
+        )
+    ], at: observedAt.addingTimeInterval(1))
+
+    #expect(activity.isActive(at: observedAt.addingTimeInterval(1)))
 }
 
 @Test("non-color cues name all reminder and integration states")
@@ -306,36 +475,47 @@ func codexIntegrationUsesActionableLanguage() {
         health: .fallbackOnly,
         isObservationEnabled: true,
         hasObservedEvent: false,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
-    let fallback = CodexIntegrationPresentation(
+    let idleFallback = CodexIntegrationPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
         hasObservedEvent: true,
+        isAgentActive: false,
+        noAgentFallbackEnabled: true
+    )
+    let activeFallback = CodexIntegrationPresentation(
+        health: .fallbackOnly,
+        isObservationEnabled: true,
+        hasObservedEvent: true,
+        isAgentActive: true,
         noAgentFallbackEnabled: true
     )
     let disabled = CodexIntegrationPresentation(
         health: .fallbackOnly,
         isObservationEnabled: false,
         hasObservedEvent: false,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
     let connected = CodexIntegrationPresentation(
         health: .connected,
         isObservationEnabled: true,
         hasObservedEvent: true,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
     let unavailable = CodexIntegrationPresentation(
         health: .unavailable,
         isObservationEnabled: false,
         hasObservedEvent: false,
+        isAgentActive: false,
         noAgentFallbackEnabled: true
     )
 
-    #expect(waiting.status == "Codex 观察：等待首次事件")
-    #expect(waiting.detail.contains("配置已完成"))
-    #expect(waiting.detail.contains("开始一个 Codex 任务"))
+    #expect(waiting.status == "Codex 观察：已就绪")
+    #expect(waiting.detail.contains("正在监听本机 Codex"))
     #expect(waiting.detail.contains("普通定时饮水提醒仍会工作"))
     #expect(!waiting.detail.contains("/hooks"))
     #expect(!waiting.detail.contains("允许 Health Token"))
@@ -344,41 +524,33 @@ func codexIntegrationUsesActionableLanguage() {
     #expect(disabled.status == "Codex 观察：未启用")
     #expect(disabled.detail.contains("自动配置本地连接"))
     #expect(!disabled.detail.contains("/hooks"))
-    #expect(fallback.status == "Codex 观察：仅低干扰兜底")
-    #expect(connected.status == "Codex 观察：已连接")
+    #expect(idleFallback.status == "Codex 观察：已就绪")
+    #expect(idleFallback.detail.contains("当前空闲"))
+    #expect(activeFallback.status == "Codex 观察：工作中")
+    #expect(connected.status == "Codex 观察：已就绪")
+    #expect(connected.detail.contains("实时事件已验证"))
     #expect(unavailable.status == "Codex 观察：不可用")
-    let distinctStatuses = Set([
-        waiting.status,
-        fallback.status,
-        disabled.status,
-        connected.status,
-        unavailable.status
-    ])
-    #expect(distinctStatuses.count == 5)
 }
 
-@Test("compact Codex status stops nagging after a trusted event")
-func compactCodexStatusUsesDurableSessionTrust() {
+@Test("compact Codex status only appears for an actionable observation problem")
+func compactCodexStatusOnlyShowsActionableProblems() {
     let waiting = CodexCompactAttentionPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
-        hasObservedEvent: false,
         hasError: false
     )
     let confirmed = CodexCompactAttentionPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
-        hasObservedEvent: true,
         hasError: false
     )
     let failed = CodexCompactAttentionPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
-        hasObservedEvent: true,
         hasError: true
     )
 
-    #expect(waiting.shouldShow)
+    #expect(!waiting.shouldShow)
     #expect(!confirmed.shouldShow)
     #expect(failed.shouldShow)
 }

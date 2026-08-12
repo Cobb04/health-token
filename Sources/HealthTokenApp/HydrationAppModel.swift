@@ -2,6 +2,57 @@ import AppKit
 import Foundation
 import HealthTokenCore
 
+struct CodexCurrentActivity {
+    private var activeSessions: [String: Date] = [:]
+    private let staleInterval: TimeInterval
+
+    init(staleInterval: TimeInterval = 5 * 60) {
+        self.staleInterval = staleInterval
+    }
+
+    mutating func observe(_ events: [AgentEvent], at observedAt: Date) {
+        expire(at: observedAt)
+
+        for event in events {
+            switch event.kind {
+            case .sessionStarted where event.role == .subagent,
+                 .promptSubmitted, .planUpdated:
+                activeSessions[event.sessionID] = observedAt
+            case .toolUsed where event.toolClassification == .ordinary:
+                activeSessions[event.sessionID] = observedAt
+            case .toolUsed:
+                activeSessions.removeValue(forKey: event.sessionID)
+            case .sessionStarted:
+                break
+            case .attentionChanged where event.attention == .required:
+                activeSessions.removeValue(forKey: event.sessionID)
+            case .completed, .aborted, .sessionRemoved:
+                activeSessions.removeValue(forKey: event.sessionID)
+            case .attentionChanged:
+                break
+            }
+        }
+    }
+
+    func isActive(at evaluatedAt: Date) -> Bool {
+        activeSessions.values.contains { lastActivityAt in
+            let age = evaluatedAt.timeIntervalSince(lastActivityAt)
+            return age >= 0 && age <= staleInterval
+        }
+    }
+
+    mutating func reset() {
+        activeSessions.removeAll(keepingCapacity: false)
+    }
+
+    private mutating func expire(at evaluatedAt: Date) {
+        activeSessions = activeSessions.filter { _, lastActivityAt in
+            let age = evaluatedAt.timeIntervalSince(lastActivityAt)
+            return age >= 0 && age <= staleInterval
+        }
+    }
+}
+
 @MainActor
 final class HydrationAppModel: ObservableObject {
     @Published private(set) var snapshot: HydrationSnapshot
@@ -10,6 +61,7 @@ final class HydrationAppModel: ObservableObject {
     @Published private(set) var integrationError: String?
     @Published private(set) var isCodexObservationEnabled: Bool
     @Published private(set) var hasObservedCodexEvent = false
+    @Published private(set) var isCodexAgentActive = false
 
     private let engine: HydrationEngine
     private let hookInstaller: CodexHookInstaller
@@ -19,6 +71,8 @@ final class HydrationAppModel: ObservableObject {
     private var configurationError: String?
     private var inboxError: String?
     private var observationActivity = CodexObservationActivity()
+    private var eventSourceMerger = CodexEventSourceMerger()
+    private var currentCodexActivity = CodexCurrentActivity()
 
     private let connectionFreshnessInterval: TimeInterval = 2 * 60
 
@@ -99,30 +153,31 @@ final class HydrationAppModel: ObservableObject {
                 : []
             observationActivity.record(
                 hookEventCount: hookEvents.count,
-                rolloutEventCount: rolloutEvents.count,
                 observedAt: observedAt
             )
             if !hookEvents.isEmpty || !rolloutEvents.isEmpty {
                 hasObservedCodexEvent = true
             }
-            let events = (hookEvents + rolloutEvents)
-                .enumerated()
-                .sorted { left, right in
-                    if left.element.timestamp == right.element.timestamp {
-                        return left.offset < right.offset
-                    }
-                    return left.element.timestamp < right.element.timestamp
-                }
-                .map { $0.element }
+            let events = eventSourceMerger.merge(
+                hookEvents: hookEvents,
+                rolloutEvents: rolloutEvents,
+                observedAt: observedAt
+            )
             for event in events {
                 snapshot = try engine.send(.agentEvent(event))
             }
+            currentCodexActivity.observe(events, at: observedAt)
+            isCodexAgentActive = currentCodexActivity.isActive(at: observedAt)
             if !isCodexObservationEnabled {
+                currentCodexActivity.reset()
+                isCodexAgentActive = false
                 snapshot = try engine.send(.agentObservationUnavailable)
             }
             inboxError = nil
         } catch {
             inboxError = "Codex 事件暂时无法读取；饮水提醒保持低干扰兜底。"
+            currentCodexActivity.reset()
+            isCodexAgentActive = false
             snapshot = (try? engine.send(.agentObservationUnavailable)) ?? snapshot
         }
         updateIntegrationError()
@@ -186,7 +241,10 @@ final class HydrationAppModel: ObservableObject {
         do {
             try operation()
             observationActivity.reset()
+            eventSourceMerger.reset()
             hasObservedCodexEvent = false
+            currentCodexActivity.reset()
+            isCodexAgentActive = false
             rolloutMonitor.reset()
             configurationError = nil
         } catch {
@@ -246,7 +304,7 @@ final class HydrationAppModel: ObservableObject {
     private func currentIntegrationHealth(at evaluatedAt: Date) -> CodexIntegrationHealth {
         return hookInstaller.health(
             command: hookCommand,
-            recentlyObservedEvent: observationActivity.wasObservedRecently(
+            recentlyObservedEvent: observationActivity.wasOfficialHookObservedRecently(
                 at: evaluatedAt,
                 freshnessInterval: connectionFreshnessInterval
             ),
@@ -282,27 +340,87 @@ final class HydrationAppModel: ObservableObject {
 }
 
 struct CodexObservationActivity {
-    private var lastObservedAt: Date?
+    private var lastHookObservedAt: Date?
 
     mutating func record(
         hookEventCount: Int,
-        rolloutEventCount: Int,
         observedAt: Date
     ) {
-        guard hookEventCount > 0 || rolloutEventCount > 0 else { return }
-        lastObservedAt = observedAt
+        if hookEventCount > 0 {
+            lastHookObservedAt = observedAt
+        }
     }
 
     mutating func reset() {
-        lastObservedAt = nil
+        lastHookObservedAt = nil
     }
 
-    func wasObservedRecently(
+    func wasOfficialHookObservedRecently(
         at evaluatedAt: Date,
         freshnessInterval: TimeInterval
     ) -> Bool {
-        guard let lastObservedAt else { return false }
-        let elapsed = evaluatedAt.timeIntervalSince(lastObservedAt)
+        wasObservedRecently(
+            lastHookObservedAt,
+            at: evaluatedAt,
+            freshnessInterval: freshnessInterval
+        )
+    }
+
+    private func wasObservedRecently(
+        _ observedAt: Date?,
+        at evaluatedAt: Date,
+        freshnessInterval: TimeInterval
+    ) -> Bool {
+        guard let observedAt else { return false }
+        let elapsed = evaluatedAt.timeIntervalSince(observedAt)
         return elapsed >= 0 && elapsed <= freshnessInterval
+    }
+}
+
+struct CodexEventSourceMerger {
+    private let officialHookSuppressionInterval: TimeInterval = 10 * 60
+    private var recentOfficialHookActivity: [String: Date] = [:]
+
+    mutating func merge(
+        hookEvents: [AgentEvent],
+        rolloutEvents: [AgentEvent],
+        observedAt: Date
+    ) -> [AgentEvent] {
+        recentOfficialHookActivity = recentOfficialHookActivity.filter {
+            let age = observedAt.timeIntervalSince($0.value)
+            return age >= 0 && age <= officialHookSuppressionInterval
+        }
+        for event in hookEvents {
+            recentOfficialHookActivity[event.sessionID] = observedAt
+        }
+
+        let hookTerminalSessions = Set(hookEvents.compactMap { event in
+            event.kind == .completed || event.kind == .aborted
+                ? event.sessionID
+                : nil
+        })
+        let retainedRolloutEvents = rolloutEvents.filter { event in
+            guard recentOfficialHookActivity[event.sessionID] != nil else {
+                return true
+            }
+            if event.kind == .completed || event.kind == .aborted {
+                return !hookTerminalSessions.contains(event.sessionID)
+            }
+            return false
+        }
+
+        return (hookEvents + retainedRolloutEvents)
+            .enumerated()
+            .sorted { left, right in
+                if left.element.timestamp == right.element.timestamp {
+                    return left.offset < right.offset
+                }
+                return left.element.timestamp < right.element.timestamp
+            }
+            .map { $0.element }
+    }
+
+    mutating func reset() {
+        recentOfficialHookActivity.removeAll(keepingCapacity: false)
     }
 }

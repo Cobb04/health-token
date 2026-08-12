@@ -165,6 +165,10 @@ public enum AgentEventAdapter {
         } else if recordType == "event_msg",
                   let eventType = payload["type"] as? String {
             switch eventType {
+            case "task_started", "user_message":
+                kind = .promptSubmitted
+                attention = .none
+                toolClassification = nil
             case "turn_aborted":
                 pendingAttentionRequestIDs.removeAll()
                 kind = .aborted

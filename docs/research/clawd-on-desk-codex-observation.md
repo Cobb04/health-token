@@ -1,223 +1,304 @@
-# clawd-on-desk 的 Codex 状态接入溯源
+# clawd-on-desk 的 Codex 监听实现：clean-room 溯源
 
-日期：2026-08-11
-结论基线：
+日期：2026-08-12
 
-- `rullerzhou-afk/clawd-on-desk`：[`640a816aa72644293e0ef3d1103b78425ad88eee`](https://github.com/rullerzhou-afk/clawd-on-desk/tree/640a816aa72644293e0ef3d1103b78425ad88eee)
-- Health Token：[`43e87c744d6d4ca8a15b294df2db9000b9d6d416`](https://github.com/Cobb04/health-token/tree/43e87c744d6d4ca8a15b294df2db9000b9d6d416)
-- 本机 Codex CLI：`codex-cli 0.144.1`
-- Codex Desktop 内置 CLI：`codex-cli 0.147.0-alpha.6.5`
+固定基线：
 
-范围：只调查 Codex 的 hook 安装、授权、运行时事件、rollout fallback 与连接健康；没有修改生产代码或测试。
+- `rullerzhou-afk/clawd-on-desk`：[`f0745407727dedf9f701e9e01bb9ac64b6e378bc`](https://github.com/rullerzhou-afk/clawd-on-desk/tree/f0745407727dedf9f701e9e01bb9ac64b6e378bc)
+- Health Token：[`db6c34b922edd86670de0d145246ae99fd14441d`](https://github.com/Cobb04/health-token/tree/db6c34b922edd86670de0d145246ae99fd14441d)
+- OpenAI Hooks 文档：[`Hooks`](https://developers.openai.com/codex/hooks)（2026-08-12 读取）
 
-## 先说结论
+范围：追踪数据源、轮询、会话发现、metadata 限制、hook/fallback 分工、恢复、去重、健康状态与本地接口；只更新研究笔记，不复制或修改产品代码。
 
-Clawd 并没有私有接口。它采用的是一条公开、可复现的双通路：
+## 结论
 
-1. **实时主通路**：向 `~/.codex/hooks.json` 合并 command hooks，让 Codex 把生命周期 JSON 写到 hook 进程的 `stdin`；hook 再把状态 POST 到 Clawd 的本地 HTTP 服务。
-2. **fallback 通路**：每 1.5 秒增量轮询 `~/.codex/sessions/**/rollout-*.jsonl`，补齐 hook 尚未覆盖、被禁用或漏达的状态。
+Clawd 的成功不是一个隐藏 hook，而是一个经过多轮加固的双通路：
 
-Health Token 已经拥有同样的两条通路，而且 rollout reader 在资源上更克制、事件落盘也更隐私安全。现场验证发现两条通路各有一个独立阻断点：
+1. official hooks 负责实时生命周期与权限；
+2. `~/.codex/sessions/**/rollout-*.jsonl` 轮询负责状态补齐、恢复及 hooks 漏达时的兜底；
+3. 两条通路以 session/turn 为键去重，并保留 JSONL completion rescue；
+4. 健康状态把“静态配置正确”“hook 真的到达”“只有 rollout 在变化”分开。
 
-- **official hook**：Clawd 的六个 handler 已有 Codex trust 记录，Health Token 的 handler 没有；
-- **rollout fallback**：当前 Codex Desktop rollout 的第一条 `session_meta` 是 19,078 bytes，而 Health Token 基线只允许读取 8 KiB metadata prefix，导致 session ID 未建立，后续 tool call 无法生成事件。
+最关键的现场差异更具体：**Clawd 在打开 rollout 时先从文件名取得 session UUID，不依赖第一条 metadata 才建立会话**；Health Token 目前必须在 32 KiB 内解析第一条 `session_meta.payload.id`。本机当前真实 Codex Desktop/Subagent metadata 是 **44,217 bytes**，因此 Health Token 得不到 session ID，随后新增的 tool/plan/attention 记录都被忽略；Clawd 的文件名锚点和更宽的读取窗口让它继续工作。
 
-所以 Clawd 有反应而 Health Token 没有，并不是一个单点故障，也不能只靠改“已连接”文案解决。
+所以本轮应该真正借鉴的是：
 
-因此最小修复不是复制 Clawd 的 HTTP 服务或 rollout monitor，而是补齐四件事：
+- 文件名先锚定 session，metadata 只负责角色/父子关系和一致性校验；
+- 完整行、增量 offset、历史回放和跨源去重各自有独立边界；
+- rollout 可用不等于 official hook 已验证，空闲也不等于“需要连接”。
 
-1. 把 rollout 的 metadata prefix 提高到仍然有界的 32 KiB；
-2. 检查 `[features].hooks` 与 hook trust；
-3. 把“rollout 可读”和“official hook 已实际到达”拆成两个健康维度；
-4. 在需要授权时明确提示：**打开 Terminal 中的 Codex CLI，输入 `/hooks` 审核 Health Token**。`/hooks` 是 CLI 的 TUI 命令，不是 Codex Desktop 的命令。
+## 1. 总体架构
 
-## 1. Clawd 如何安装 Codex hook
+Clawd 自己把 Codex 声明为 `hook+log-poll`：hooks 是生命周期主通路，JSONL 是 fallback；轮询目标是 `~/.codex/sessions` 下的 `rollout-*.jsonl`，周期 1,500 ms。[`agents/codex.js#L1-L54`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex.js#L1-L54)
 
-### 1.1 自动同步，而不是等用户手工写 JSON
+README 也明确将 Codex 集成描述为 “official hooks with JSONL fallback”，不是单一 hook 或 Clawd 私有协议。[`README.md#L38-L46`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/README.md#L38-L46)
 
-Clawd 把 Codex 声明为 `hook+log-poll` 集成，并把 hooks 配置格式标成 `codex-hooks-json`；fallback 目录是 `~/.codex/sessions`，间隔为 1500 ms。来源：[agents/codex.js#L1-L53](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex.js#L1-L53)。
-
-本地 HTTP 服务启动后，Clawd 会异步同步所有已启用集成，包括 Codex；这避免 hook 文件 I/O 阻塞应用启动。来源：[src/server.js#L845-L853](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/server.js#L845-L853)、[src/integration-sync.js#L679-L692](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/integration-sync.js#L679-L692)。
-
-安装器定位 `$CODEX_HOME`，否则使用 `~/.codex`，同时取得 `hooks.json` 与 `config.toml`。来源：[hooks/codex-install-utils.js#L20-L49](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-install-utils.js#L20-L49)。
-
-### 1.2 写哪些事件
-
-当前 Clawd 注册六个 official hook：
-
-- `SessionStart`
-- `UserPromptSubmit`
-- `PreToolUse`
-- `PermissionRequest`
-- `PostToolUse`
-- `Stop`
-
-普通事件超时 30 秒，`PermissionRequest` 因为要等待用户审批，超时 600 秒。来源：[hooks/codex-install-utils.js#L27-L40](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-install-utils.js#L27-L40)。
-
-安装器以 `codex-hook.js` 为 ownership marker，只更新或删除自己拥有的 handler，保留其他应用的 hook group；新 handler 的形状是 `{type:"command", command, timeout}`，包在独立 matcher group 中。来源：[hooks/codex-install-utils.js#L654-L723](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-install-utils.js#L654-L723)。
-
-Health Token 的 `CodexHookInstaller` 已采用相同的“合并并保留第三方配置”结构，而且多注册了当前官方文档已经支持的 `SubagentStart` / `SubagentStop`。来源：[CodexHookInstaller.swift#L30-L48](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenCore/CodexHookInstaller.swift#L30-L48)、[AgentModels.swift#L3-L12](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenCore/AgentModels.swift#L3-L12)。这一部分没有必要退回去照抄 Clawd 的较窄事件表。
-
-### 1.3 feature flag
-
-Clawd 会处理 `[features].hooks`：
-
-- 已显式为 `false` 时，普通自动同步尊重用户选择，不强行开启；
-- 缺失时写入 `hooks = true`；
-- 旧的 `codex_hooks` 会迁移到规范的 `hooks`，并保留显式 `false`；
-- Doctor 的显式 Repair 才可通过 `force` 覆盖 `false`。
-
-来源：[hooks/codex-install-utils.js#L364-L449](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-install-utils.js#L364-L449)、[src/integration-sync.js#L297-L325](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/integration-sync.js#L297-L325)。
-
-OpenAI 当前官方文档说明 hooks 已默认启用，规范关闭方式仍是 `[features].hooks = false`，`codex_hooks` 只是 deprecated alias。来源：[OpenAI Codex Hooks — Turn hooks off](https://developers.openai.com/codex/hooks#turn-hooks-off)。本机用全新临时 `CODEX_HOME` 验证，两套本机 CLI 的 `codex features list` 都报告 `hooks stable true`。
-
-所以对于当前 Codex，缺少 `hooks = true` 本身通常不再阻断；但 Health Token 要成为独立产品，仍应像 Clawd 一样**识别并尊重显式 false**，而不是只看 `hooks.json` 中有没有自己的 command。
-
-## 2. trust 才是当前机器的真实阻断点
-
-### 2.1 Codex 的规则
-
-OpenAI 官方文档规定：非 managed command hook 在运行前必须由用户审核并信任；信任绑定到 hook definition 的当前 hash，新增或变更都会重新进入待审核。审核入口是 **Codex CLI 的 `/hooks`**。来源：[OpenAI Codex Hooks — Review and trust hooks](https://developers.openai.com/codex/hooks#review-and-trust-hooks)。
-
-本机 CLI 的 `--help` 还提供 `--dangerously-bypass-hook-trust`，明确说明它只适用于外部已经审查过 hook 的一次性自动化。Health Token 不应使用该参数，更不应自行伪造 `[hooks.state]`。
-
-### 2.2 Clawd 如何检查 trust
-
-Codex 把 trust 记录存在 `config.toml` 的 `[hooks.state."<hook-id>"]` 下，Clawd 根据 hook 在 JSON 中的位置构造 ID：
+### 数据流
 
 ```text
-<hooks.json absolute path>:<snake_case event>:<matcher-group index>:<handler index>
+Codex
+├── official command hooks
+│   └── codex-hook.js ──POST──> 127.0.0.1:<23333...23337>/state|permission
+└── ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+    └── CodexLogMonitor (1.5 s 增量轮询)
+        └── session state runtime
+
+两路进入 runtime 前后：session + turn fence / official-activity TTL 去重
 ```
 
-然后检查该 table 是否带 `trusted_hash = "sha256:..."`。来源：[src/doctor-detectors/codex-features-check.js#L100-L131](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/doctor-detectors/codex-features-check.js#L100-L131)、[src/doctor-detectors/codex-features-check.js#L149-L223](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/doctor-detectors/codex-features-check.js#L149-L223)。
+## 2. official hooks：安装、事件和职责
 
-Doctor 将三类状态分开：feature disabled、needs review、not registered / broken path。来源：[src/codex-hook-health.js#L22-L68](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/codex-hook-health.js#L22-L68)。
+### 2.1 注册哪些 hook
 
-注意：Clawd 目前只检查 `trusted_hash` 是否存在，并没有自己重算当前 hook hash；而且 trust inspector 只检查当前确实存在的 Clawd positions，基础路径校验是“任一 marker command 可验证”即可，所以静态检查不能独立证明六个事件全部完整。来源：[src/doctor-detectors/agent-integrations.js#L302-L366](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/doctor-detectors/agent-integrations.js#L302-L366)、[src/doctor-detectors/agent-integrations.js#L1367-L1372](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/doctor-detectors/agent-integrations.js#L1367-L1372)。这是一个近似静态诊断；真正可靠的连接验证仍是实际收到 hook 事件。Health Token 现有 `allSatisfy` 完整性检查反而更严格，不应退化。
+Clawd 当前注册六个事件：
 
-### 2.3 本机证据：为什么 Clawd 热、Health Token 静
-
-对本机配置做了只读结构检查，结果是：
-
-| event | Clawd 位置 | Health Token 位置 | 本机 trust 记录 |
-| --- | --- | --- | --- |
-| `SessionStart` | `0:0` | `1:0` | 只有 `0:0` |
-| `UserPromptSubmit` | `0:0` | `1:0` | 只有 `0:0` |
-| `PreToolUse` | `0:0` | `1:0` | 只有 `0:0` |
-| `PermissionRequest` | `0:0` | `1:0` | 只有 `0:0` |
-| `PostToolUse` | `0:0` | `1:0` | 只有 `0:0` |
-| `Stop` | `0:0` | `1:0` | 只有 `0:0` |
-| `SubagentStart` | 无 | `0:0` | 无 |
-| `SubagentStop` | 无 | `0:0` | 无 |
-
-这与用户看到的行为完全一致：Clawd 的 command 已被 Codex 信任，可以实时收到事件；Health Token 是新 matcher group，尚未信任，Codex 会跳过它。`hooks.json` 中存在 Health Token command 只证明“已配置”，不能证明“会执行”。
-
-## 3. Clawd 如何消费 official hook
-
-Codex 会把单个 JSON object 写到 hook 的 `stdin`。当前官方公共字段包括 `session_id`、`transcript_path`、`cwd`、`hook_event_name`、`model`；工具相关 hook 还会包含工具名与输入。来源：[OpenAI Codex Hooks — Common input fields](https://developers.openai.com/codex/hooks#common-input-fields)。
-
-Clawd 的 `codex-hook.js` 读取 stdin 后做两类处理：
-
-- 生命周期事件映射：`SessionStart → idle`、`UserPromptSubmit → thinking`、`PreToolUse/PostToolUse → working`、`Stop → turn end`。来源：[hooks/codex-hook.js#L52-L60](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L52-L60)、[hooks/codex-hook.js#L405-L476](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L405-L476)。
-- `PermissionRequest`：把请求 POST 到本地服务，最长等待 590 秒，再把经过白名单清洗的 allow / deny decision 写回 stdout；失败时输出 `{}`，让 Codex 原生流程接管。来源：[hooks/codex-hook.js#L293-L335](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L293-L335)、[hooks/codex-hook.js#L479-L496](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L479-L496)、[hooks/codex-hook.js#L622-L646](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L622-L646)。
-
-状态通过 localhost HTTP POST 进入 Electron 主进程，而非写共享事件文件。hook 接收失败时，`SessionStart` 还可以自动启动 Clawd 后重试。来源：[hooks/codex-hook.js#L648-L717](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L648-L717)。
-
-Health Token 没有权限审批需求，因此不应复制这段阻塞式 HTTP/decision 流程。现在的实现更合适：helper 只把 hook 输入归一化为小型 `AgentEvent`，写入本地 inbox，并始终输出 `{}`，绝不替用户回答。来源：[HealthTokenHook.swift#L4-L16](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenHook/HealthTokenHook.swift#L4-L16)、[CodexEventInbox.swift#L32-L68](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenCore/CodexEventInbox.swift#L32-L68)。
-
-## 4. Clawd 的 rollout fallback
-
-Clawd 始终保留 JSONL 监控；官方 hooks 只覆盖实时主路径，rollout 负责 web search、compaction、aborted turn、request_user_input、quota/metadata 以及 hook 被禁用或漏达的会话。映射表见 [agents/codex.js#L19-L50](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex.js#L19-L50)。
-
-监控器启动时先扫描，随后每 1500 ms poll；使用文件 offset 增量读取，并有防历史重放、活跃文件窗口、文件/字节/重试预算。来源：[agents/codex-log-monitor.js#L1-L15](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex-log-monitor.js#L1-L15)、[agents/codex-log-monitor.js#L34-L61](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex-log-monitor.js#L34-L61)、[agents/codex-log-monitor.js#L206-L247](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex-log-monitor.js#L206-L247)。
-
-Clawd 不依赖并不存在于其 official hook 事件表中的 `SubagentStart/Stop` 来识别子 agent。它读取 rollout 第一条 `session_meta`，优先识别 `payload.source.subagent`，再看 `agent_role`、`agent_type`、parent id；角色一旦升级为 subagent 不会被后续 root 信号降级。来源：[hooks/codex-subagent-fields.js#L30-L94](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-subagent-fields.js#L30-L94)、[agents/codex-subagent-classifier.js#L22-L75](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex-subagent-classifier.js#L22-L75)。
-
-当同一 session 最近收到 official hook 时，Clawd 用 10 分钟 TTL 抑制 rollout 中已被 official hook 覆盖的重复事件；如果 official `Stop` 漏失，但 session 仍处于 working-like，允许 JSONL `task_complete` 穿透并收尾。来源：[src/agent-runtime-main.js#L14-L37](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/agent-runtime-main.js#L14-L37)、[src/agent-runtime-main.js#L96-L130](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/agent-runtime-main.js#L96-L130)、[src/codex-official-activity.js#L5-L18](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/codex-official-activity.js#L5-L18)。
-
-Health Token 的 rollout reader 已覆盖 function/custom tool、plan、attention、completion/abort 与 subagent metadata，而且默认预算更小：8 个候选、512 个目录项、64 KiB/文件、256 KiB/poll、32 KiB/record。来源：[CodexRolloutMonitor.swift#L7-L50](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenCore/CodexRolloutMonitor.swift#L7-L50)、[AgentEventAdapter.swift#L109-L220](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenCore/AgentEventAdapter.swift#L109-L220)。没有理由用 Clawd 更大的 reader 替换它。
-
-但基线的 `maxSessionMetadataBytes` 只有 8 KiB，而本机真实 Desktop `session_meta` 为 19,078 bytes。Clawd 对第一条 metadata line 使用独立的 256 KiB 上限，并明确说明必须读到完整换行，不能让截断后的 JSON parse failure 把 session/subagent 身份悄悄丢掉。来源：[agents/codex-log-monitor.js#L67-L88](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex-log-monitor.js#L67-L88)、[hooks/codex-hook.js#L135-L174](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L135-L174)。
-
-最小适配不是照搬 256 KiB，而是把 Health Token 的 metadata prefix 提高到已有 `maxRecordBytes` 的 32 KiB，并保留全部总量预算。18 KiB 回归样本已经证明：旧值无法 anchor session，新值可让后续 Desktop tool call 生成正确 session event，同时不读取或持久化 metadata 内容。
-
-## 5. 两边“连接健康”的关键差异
-
-Clawd 把健康拆成两层：
-
-1. **静态健康**：hook 是否注册、脚本路径是否有效、feature 是否关闭、trust record 是否存在。来源：[src/doctor-detectors/agent-integrations.js#L946-L995](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/doctor-detectors/agent-integrations.js#L946-L995)。
-2. **运行时验证**：在测试窗口里，只有本地 HTTP 服务真正 `accepted` hook event 才算 `http-verified`；仅看到 rollout 文件 mtime 变化却没有 hook event，会报 hook 路径未到达。来源：[src/doctor-hook-activity.js#L135-L184](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/src/doctor-hook-activity.js#L135-L184)。
-
-Health Token 当前有两个误判点：
-
-- `CodexHookInstaller.health` 只要“已写入 hooks.json + 最近观察到任何事件”就返回 `.connected`，没有检查 feature 或 trust。来源：[CodexHookInstaller.swift#L80-L101](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenCore/CodexHookInstaller.swift#L80-L101)。
-- `CodexObservationActivity` 把 `hookEventCount` 和 `rolloutEventCount` 合并为同一个 `lastObservedAt`；因此纯 rollout 活动也会把 UI 标成“已连接”。来源：[HydrationAppModel.swift#L280-L303](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenApp/HydrationAppModel.swift#L280-L303)。
-
-这正是应该从 Clawd 借鉴的核心：**来源分流和健康诊断，而不是 UI 或权限代理。**
-
-## 6. 建议的最小适配
-
-### P0：解决这台机器
-
-1. 将 `maxSessionMetadataBytes` 从 8 KiB 调至 32 KiB，并保留真实大 metadata 的回归测试；这是 rollout fallback 能看见当前 Desktop tool call 的前置条件。
-2. 增加只读 `CodexHookTrustInspector`：解析 `config.toml` 中 `[features].hooks` 和 `[hooks.state]`，按 Health Token 在 `hooks.json` 中的真实 group/handler 位置构造 expected trust IDs。
-3. 状态至少区分：
-   - `fallbackActive`：rollout 可读，正常饮水增强可工作；
-   - `officialHookNeedsReview`：handler 已安装但缺 trust；
-   - `officialHookVerified`：本次应用运行中至少收到一次 Health Token official hook event；
-   - `hooksDisabledByUser`：显式 `[features].hooks = false`；
-   - `unavailable/error`。
-4. 当 `needsReview` 时给出准确动作：`在 Terminal 启动 Codex CLI → /hooks → 选择并信任 Health Token`。不要再让用户在 Codex Desktop 输入 `/hooks`。
-5. **绝不自行写入 `trusted_hash`**：这个 hash 是 Codex 对用户审核结果的所有权记录。应用伪造它等于绕过安全边界，而且一旦 Codex 的 canonical hash 算法或 hook shape 改变就会脆弱失效。也不调用 trust bypass，不替用户决策。
-
-### P1：独立产品稳定性
-
-1. 像 Clawd 一样持久化“用户希望启用 Codex 观察”的 intent；启动时自动 reconcile 自己的 handler。现在 Health Token 只用“当前 command 是否完整存在”反推开关状态，应用路径变化后会丢失 intent。来源：[HydrationAppModel.swift#L25-L51](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenApp/HydrationAppModel.swift#L25-L51)。
-2. 识别 `[features].hooks = false` 并尊重它；只有明确的 Repair 动作才询问用户是否改为 true。当前 Codex 默认 true，普通 enable 不必无条件写 config。
-3. 记录 hook 与 rollout 两个独立 freshness 时间；rollout 到达不能证明 official hook 到达。
-4. 保留现有 rollout fallback 和 1 秒刷新；无需复制 Clawd 的 localhost HTTP server。
-
-### 不建议复制
-
-- 不复制 Clawd 的 `PermissionRequest` intercept/allow/deny；Health Token 只观察健康窗口，权限仍应归 Codex。
-- 不复制 Clawd 对提示内容、tool input、assistant output、cwd、model、transcript path 的采集。
-- 不用 Clawd 的 30/600 秒 timeout；Health Token helper 不阻塞决策，现有 1 秒更安全。
-- 不把 Clawd 的六事件表覆盖 Health Token 的八事件表；当前 OpenAI 文档已经列出 `SubagentStart` / `SubagentStop`。
-
-## 7. 隐私与许可证边界
-
-Clawd 为桌宠、跳转、审批与 session dashboard 读取和传递的信息远多于 Health Token：
-
-- `PermissionRequest` 会携带清洗后的 `tool_input`、description、cwd、turn id、transcript path 与 model。来源：[hooks/codex-hook.js#L337-L402](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L337-L402)。
-- `Stop` 会从 transcript 读取最后一段 assistant output；普通状态也会读取 session title 和 session metadata。来源：[hooks/codex-hook.js#L435-L457](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/hooks/codex-hook.js#L435-L457)。
-- rollout monitor 会解析 assistant text、title、context usage 与 quota。来源：[agents/codex-log-monitor.js#L1650-L1705](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/agents/codex-log-monitor.js#L1650-L1705)。
-
-Health Token 的持久化 `AgentEvent` 只有 kind、session/parent ID、时间、角色、attention 与工具分类，不含提示词、代码、tool 参数或输出。来源：[AgentModels.swift#L30-L66](https://github.com/Cobb04/health-token/blob/43e87c744d6d4ca8a15b294df2db9000b9d6d416/Sources/HealthTokenCore/AgentModels.swift#L30-L66)。这条隐私边界应保留。
-
-另外，clawd-on-desk 当前是 **AGPL-3.0-only**，不是 MIT。来源：[clawd-on-desk LICENSE](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/LICENSE#L1-L18)、[package.json#L71](https://github.com/rullerzhou-afk/clawd-on-desk/blob/640a816aa72644293e0ef3d1103b78425ad88eee/package.json#L71)。因此建议借鉴协议与架构，并依据 OpenAI 官方 hook 契约独立实现；不要逐段复制 Clawd 源码，除非项目明确接受 AGPL 的发布义务。此处只是工程风险提示，不是法律意见。
-
-## 8. 相关提交历史
-
-以下 SHA 来自 upstream git history：
-
-| SHA | 日期 | 意义 |
+| Codex hook | Clawd 状态 | 用途 |
 | --- | --- | --- |
-| [`bdf17d2d`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/bdf17d2d843a994f197f6995171210c3a11574d8) | 2026-03-25 | 最早的 Codex rollout adapter / 多 agent 架构 |
-| [`8b065127`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/8b06512769c0d8cc2aa11c1fe28afccdba20d760) | 2026-04-26 | 加入 Codex official state hooks 与安装器 |
-| [`3d5e1f00`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/3d5e1f0013bcb8e730cd12e9a6df7b14dea4a5eb) | 2026-04-26 | 加入 official `PermissionRequest` 审批通路 |
-| [`eba0fa58`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/eba0fa58bdbcf2a59b962827a725b6089859ca5d) | 2026-05-08 | 规范化 `[features].hooks`、legacy 迁移与 trust 诊断 |
-| [`4941ecc3`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/4941ecc350733957e989b9c3dabefef4dd57d51e) | 2026-06-04 | 加入 official `Stop` 漏失时的 JSONL completion rescue |
-| [`982819b7`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/982819b7165257302e4dbbbc80b47e845ee1bfb7) | 2026-06-30 | 删除 JSONL 审批猜测，审批只信 official hook |
-| [`1b375628`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/1b37562809a99ceb35316da67bd044a3c5903637) | 2026-06-30 | 加入 official hook 健康状态与启动提醒 |
-| [`1de67cfb`](https://github.com/rullerzhou-afk/clawd-on-desk/commit/1de67cfbcaed118fec8a44134b9d4622595e61e1) | 2026-08-11 | Doctor 明确识别未审核 hooks |
+| `SessionStart` | `idle` | 建立会话 |
+| `UserPromptSubmit` | `thinking` | turn 开始 |
+| `PreToolUse` | `working` | 工具开始 |
+| `PermissionRequest` | `notification` | 原生权限请求 |
+| `PostToolUse` | `working` | 工具结束仍工作 |
+| `Stop` | `codex-turn-end` | turn 结束 |
+
+来源：[`agents/codex.js#L10-L18`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex.js#L10-L18)、[`hooks/codex-install-utils.js#L20-L40`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-install-utils.js#L20-L40)。普通 handler timeout 为 30 秒，`PermissionRequest` 为 600 秒。
+
+OpenAI 当前规范还提供 `SubagentStart`、`SubagentStop`、`SessionEnd` 等事件，并规定同一事件的多个 matching command hooks 并发执行；因此 Clawd 和 Health Token 可以同时注册，不存在“Clawd 监听后占用了 Codex”的排他关系。[OpenAI Hooks：runtime / lifecycle](https://developers.openai.com/codex/hooks#hooks)
+
+### 2.2 安装与修复策略
+
+Clawd 的安装器：
+
+- 优先使用 `CODEX_HOME`，否则是 `~/.codex`；
+- 自动合并 `hooks.json`，只按自己的 script marker 更新/删除自己的 command，保留第三方 hook；
+- 缺少 `[features].hooks` 时补 `hooks = true`；显式 `false` 在普通自动同步中被尊重，只有明确 repair 的 `force` 才覆盖；
+- 迁移 deprecated `codex_hooks`，保留显式布尔意图；
+- 原子写入 hooks JSON，卸载时可带 backup；
+- 新增或改变 hook 后明确提示用户在 Codex CLI 运行 `/hooks` 审核。
+
+来源：[`hooks/codex-install-utils.js#L20-L48`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-install-utils.js#L20-L48)、[`#L364-L450`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-install-utils.js#L364-L450)、[`#L567-L744`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-install-utils.js#L567-L744)、[`#L746-L784`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-install-utils.js#L746-L784)。
+
+Codex 的 trust 不是 Clawd 自行生成的。OpenAI 规定非 managed command hook 要审核当前 definition hash；新增或修改后会被跳过，直到用户在 CLI `/hooks` 中信任。[OpenAI Hooks：Review and trust hooks](https://developers.openai.com/codex/hooks#review-and-trust-hooks)
+
+### 2.3 hook 运行时
+
+`codex-hook.js` 从 stdin 读取 Codex hook JSON，将生命周期转换为本地状态 POST；`SessionStart` 第一次 POST 失败时，可以按用户配置启动 Clawd、等待本地服务就绪，再重建并重试该事件。[`hooks/codex-hook.js#L405-L477`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-hook.js#L405-L477)、[`#L648-L718`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-hook.js#L648-L718)
+
+为了判断 Desktop 来源与 Subagent 角色，hook 会从 `transcript_path` 以 8 KiB chunk 读取完整第一条 `session_meta`，最多 256 KiB，而不是猜一个很小的固定 prefix。[`hooks/codex-hook.js#L43-L50`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-hook.js#L43-L50)、[`#L121-L175`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-hook.js#L121-L175)
+
+`PermissionRequest` 是 Clawd 特有产品职责：它把经过限制的请求送到 `/permission`，最长等待约 590 秒，只把白名单 allow/deny 结构写回 stdout；任何解析或传输失败都输出 `{}`，交还 Codex 原生流程。[`hooks/codex-hook.js#L293-L335`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-hook.js#L293-L335)、[`#L337-L402`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-hook.js#L337-L402)、[`#L479-L496`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-hook.js#L479-L496)。Health Token 不需要复制权限代理。
+
+## 3. JSONL fallback：为什么 Clawd 能读到
+
+### 3.1 session ID 首先来自文件名
+
+Clawd 新跟踪一个文件时，先从标准 rollout 文件名最后五段提取 UUID，立即建立 `codex:<uuid>` session；它并不等待 `session_meta.payload.id`。[`agents/codex-log-monitor.js#L1178-L1209`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1178-L1209)、[`#L1805-L1814`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1805-L1814)
+
+`session_meta` 随后补 `cwd`、originator、source 和 root/Subagent 分类；它不是会话存在性的唯一锚点。[`agents/codex-log-monitor.js#L1622-L1630`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1622-L1630)、[`#L1777-L1789`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1777-L1789)
+
+本机只读验证（不记录 prompt/tool 内容）：
+
+- 最新 rollout 文件名中的 UUID 与 `session_meta.payload.id` 相等；
+- 第一条 metadata 为 44,217 bytes；
+- 它来自 `codex_work_desktop`，并带 `source.subagent.thread_spawn.parent_thread_id`；
+- Health Token 当前 `maxSessionMetadataBytes` 和 `maxRecordBytes` 都是 32 KiB。
+
+Health Token 的启动路径在 32 KiB 内找不到第一条换行就返回 `nil`，之后 cursor 没有 session ID；稳态只有再次读到 `session_meta` 才能建立 context，普通 tool record 在 `sessionID == nil` 时直接跳过。[`CodexRolloutMonitor.swift#L19-L50`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenCore/CodexRolloutMonitor.swift#L19-L50)、[`#L297-L341`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenCore/CodexRolloutMonitor.swift#L297-L341)、[`#L462-L518`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenCore/CodexRolloutMonitor.swift#L462-L518)、[`#L584-L635`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenCore/CodexRolloutMonitor.swift#L584-L635)
+
+这就是当前 “Clawd 火热感知，Health Token 需连接” 的直接原因。
+
+### 3.2 轮询、会话发现和预算
+
+Clawd `start()` 立即 poll，随后每 1,500 ms poll。[`agents/codex-log-monitor.js#L206-L226`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L206-L226)
+
+它同时发现：
+
+- 本地今天、昨天、前天的目录；
+- 最近存在的 7 个日期目录，用于时区漂移与 resume；
+- 整棵年月日树中仍有 5 分钟内写入的旧日期目录，解决 Desktop 长对话持续写回最初日期目录的问题；这棵树以每轮最多 16 次发现操作增量遍历，不阻塞主进程。
+
+来源：[`agents/codex-log-monitor.js#L943-L968`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L943-L968)、[`#L973-L1087`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L973-L1087)、[`#L1089-L1146`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1089-L1146)。
+
+主要常量：
+
+| 边界 | Clawd 固定值 |
+| --- | ---: |
+| active session mtime window | 5 min |
+| tracked files / retired trackers | 50 / 100 |
+| partial line | 64 KiB |
+| 单文件单次 read | 4 MiB |
+| 每 poll 请求总量 | 16 MiB |
+| 每 poll file attempts | 64 |
+| replay work | 40（background 32） |
+
+来源：[`agents/codex-log-monitor.js#L34-L61`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L34-L61)。这些是 Clawd 的产品负载选择，不应机械照搬；Health Token 应保留更小预算，但不能用“超过一次预算就丢掉整个 session context”的方式实现。
+
+### 3.3 增量读取与文件变化
+
+Clawd 每个 tracker 维护 byte offset，只提交最后一个完整换行之前的 bytes；不完整尾行留在磁盘，下次整体重读。tracker 被 LRU 淘汰后，轻量 read-position ledger 仍在本进程内保留，避免再长时间运行时重放。[`agents/codex-log-monitor.js#L164-L195`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L164-L195)、[`#L1280-L1366`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1280-L1366)
+
+它用 inode/dev（fallback 为 birthtime）识别同路径换文件；identity 变化或 size 小于 offset 时 rebaseline，而不是把旧状态继续套在新文件上。[`agents/codex-log-monitor.js#L1167-L1175`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1167-L1175)、[`#L1570-L1582`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1570-L1582)
+
+### 3.4 历史回放防护
+
+Clawd 有两层 replay guard：
+
+1. 带 timestamp 的旧行，早于 monitor start 约 1.5 秒时不发可见回调；
+2. 初次 attach 到 monitor 启动前已存在的文件时进入 backfill，静默重建内部状态，扫描结束最多合成一次当前持续状态（只允许 `thinking`/`working`），不会重放一次性 attention/celebration。
+
+来源：[`agents/codex-log-monitor.js#L5-L15`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L5-L15)、[`#L61-L66`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L61-L66)、[`#L1233-L1238`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1233-L1238)、[`#L1640-L1648`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1640-L1648)、[`#L1920-L1964`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1920-L1964)。
+
+## 4. Subagent、Plan 与工具状态来自哪里
+
+Clawd 的 official hook 表本身没有 `SubagentStart/Stop`；它从 hook payload 或 rollout `session_meta` 的结构化 source/role/parent 字段分类。`source.subagent`、agent role/type 或 parent session/thread id 都可以作为信号；一旦 session 被升级为 Subagent，不会被后续 root 信号降级。分类 LRU 容量 100。[`hooks/codex-subagent-fields.js#L21-L95`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/codex-subagent-fields.js#L21-L95)、[`agents/codex-subagent-classifier.js#L12-L87`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-subagent-classifier.js#L12-L87)
+
+JSONL 映射将 `function_call`、`custom_tool_call`、web search、exec/patch end 等归为 working；`task_started/user_message` 为 thinking，`context_compacted` 为 sweeping，`task_complete` 按本 turn 是否有工具或 assistant output 解析为 attention/idle。[`agents/codex.js#L19-L37`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex.js#L19-L37)、[`agents/codex-log-monitor.js#L1707-L1750`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1707-L1750)
+
+Clawd 没有单独名为 “Plan” 的 UI 信号；Plan 若以 tool/function/custom-tool record 出现，会进入 working。Health Token 已有自己的 `planUpdated` 与 qualifying-tool 规则，不应删除，只需保证底层 rollout 能稳定锚定 session。
+
+## 5. 启动恢复
+
+Clawd 的恢复面向桌宠的待回答卡片，范围明显大于 Health Token 所需：
+
+- 一次性启动 sweep，最多 20 个文件、head+tail 总读预算 20 MiB；
+- 第一行必须完整读取，head 上限 256 KiB；
+- tail 只读最多 1 MiB，寻找仍未匹配 output 且未被 task completion/abort 关闭的 `request_user_input`；
+- pending 最长保留 24 小时，同时检查文件 mtime 和请求自身 timestamp；
+- 读取前后复核 file identity/size/mtime，避免并发增长或替换形成混合快照；
+- Subagent 不显示 user-input card。
+
+来源：[`agents/codex-log-monitor.js#L67-L104`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L67-L104)、[`#L362-L515`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L362-L515)、[`#L622-L650`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L622-L650)、[`#L684-L903`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L684-L903)。
+
+Health Token 只需要健康提醒，现有“最多恢复 2 分钟内可证明未解决的 root attention”更符合隐私和低打扰目标；应借鉴完整行与快照复核，不应复制 Clawd 的 24 小时卡片恢复。
+
+## 6. 两路事件如何去重
+
+Clawd 不是简单把 hook events 和 rollout events 拼接：
+
+1. official activity 按 session + 可选 turn ID 记录，TTL 10 分钟；最多 200 sessions，每 session 最多 8 个 exact turn marks。[`src/codex-official-activity.js#L5-L18`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/codex-official-activity.js#L5-L18)、[`#L51-L88`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/codex-official-activity.js#L51-L88)
+2. official 已覆盖的 JSONL event 在该窗口被抑制；但如果 official `Stop` 漏失、runtime 仍显示 working-like，JSONL `task_complete` 被允许穿透以收尾。[`src/agent-runtime-main.js#L14-L37`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/agent-runtime-main.js#L14-L37)、[`#L104-L130`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/agent-runtime-main.js#L104-L130)
+3. turn fence 进一步阻止已结束 turn 的迟到 working、重复 terminal、不同 turn 的 stale terminal；上限 200 sessions、512 个 closed-turn tombstones。[`src/codex-turn-fence.js#L5-L21`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/codex-turn-fence.js#L5-L21)、[`#L97-L167`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/codex-turn-fence.js#L97-L167)
+4. rollout monitor 自身也抑制连续相同的 `working`。[`agents/codex-log-monitor.js#L1759-L1774`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/agents/codex-log-monitor.js#L1759-L1774)
+
+Health Token 当前把 `hookEvents + rolloutEvents` 按时间排序后逐条送给 engine，没有 source/turn 去重；同一工具被两路观察到时，tool streak 可能被重复推进。[`HydrationAppModel.swift#L89-L131`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenApp/HydrationAppModel.swift#L89-L131)、[`HydrationEngine.swift#L377-L424`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenCore/HydrationEngine.swift#L377-L424)
+
+## 7. 健康状态不是“最近有没有事件”
+
+Clawd 有三层证据：
+
+### 7.1 静态配置健康
+
+Doctor 检查：Codex/配置是否存在、hook 是否注册、command path 是否有效、`[features].hooks` 是否关闭、每个 Clawd hook position 是否存在 trust record。trust ID 来自 `hooks.json absolute path + snake_case event + group index + handler index`。[`src/doctor-detectors/codex-features-check.js#L35-L91`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/doctor-detectors/codex-features-check.js#L35-L91)、[`#L109-L223`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/doctor-detectors/codex-features-check.js#L109-L223)
+
+### 7.2 运行时到达验证
+
+连接测试窗口只把本地 HTTP 服务真正 accepted 的 hook event 标为 `http-verified`。如果 rollout file mtime 变化但没有 HTTP hook 到达，它会区分 `needs-review`、HTTP blocked/dropped 或 no activity。[`src/doctor-hook-activity.js#L135-L184`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/doctor-hook-activity.js#L135-L184)、[`#L187-L222`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/doctor-hook-activity.js#L187-L222)
+
+### 7.3 用户提示去重
+
+Clawd 将 feature-disabled、needs-review、not-registered、broken-path 分成稳定 signature；启动提醒只在 signature 边沿变化时出现，同一问题不会每次启动重复 nag。[`src/codex-hook-health.js#L22-L68`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/codex-hook-health.js#L22-L68)、[`#L118-L141`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/codex-hook-health.js#L118-L141)
+
+Health Token 当前把 hook count 与 rollout count 合并成一个 `lastObservedAt`，两分钟内任一来源有事件就称 `.connected`；应用重启后内存 evidence 清空，正常空闲也会显示“Codex 需连接”。[`HydrationAppModel.swift#L23-L51`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenApp/HydrationAppModel.swift#L23-L51)、[`#L246-L254`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenApp/HydrationAppModel.swift#L246-L254)、[`#L284-L307`](https://github.com/Cobb04/health-token/blob/db6c34b922edd86670de0d145246ae99fd14441d/Sources/HealthTokenApp/HydrationAppModel.swift#L284-L307)
+
+## 8. Clawd 有可供 Health Token 直接复用的本地接口吗？
+
+Clawd 的本地 server 只绑定 `127.0.0.1`，候选端口为 23333–23337；实际端口/owner PID 写入 `~/.clawd/runtime.json`。hook 先尝试 runtime port，再探测候选端口。[`hooks/server-config.js#L6-L20`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/server-config.js#L6-L20)、[`#L340-L395`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/server-config.js#L340-L395)、[`#L428-L449`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/server-config.js#L428-L449)、[`#L776-L827`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/hooks/server-config.js#L776-L827)
+
+对外 route 只有：
+
+- `GET /state`：只返回 `{ok, app, port}` 的健康探测；
+- `POST /state`：hook 写入状态；
+- `POST /permission`：权限请求。
+
+来源：[`src/server.js#L716-L759`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/server.js#L716-L759)、[`src/server-route-state.js#L138-L145`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/src/server-route-state.js#L138-L145)。
+
+**没有一个受支持的 GET/session stream 让第三方读取 Clawd 已归一化后的 Codex 状态。** Health Token 若探测其 Electron 内部状态，会依赖未承诺的内部实现、强制用户同时运行 Clawd，也触及许可证边界。因此正确复用层级是“独立读取同一个 Codex source”，不是“读取 Clawd 结果”。Health Token 现有 file inbox 也比复制 localhost server 更简单、更私密。
+
+## 9. 与 Health Token 的精确差距
+
+| 维度 | Clawd | Health Token 当前 | 影响 |
+| --- | --- | --- | --- |
+| polling | 1.5 s | 1 s | Health Token 已足够快 |
+| session ID | 先从标准 filename UUID 建立 | 必须解析 `session_meta.payload.id` | 44,217-byte metadata 直接让 HT 失明 |
+| first metadata | hook/recovery 完整行最多 256 KiB；live reader 可读当前 44 KiB | metadata 与 record 均 32 KiB | Desktop/Subagent metadata 超限 |
+| discovery | today-2 + recent 7 + 增量发现活跃旧目录 | 递归扫描，512 entries，最多 8 个、mtime 10 min | 大量历史目录下可能饿死长期旧日会话 |
+| steady-state read | chunk/offset/完整换行；4 MiB/file read | 一轮新增超过 64 KiB 就 fail closed 到 EOF | 大输出期间可能丢下一批 lifecycle |
+| source dedupe | session+turn TTL + turn fence + completion rescue | 两路 events 直接拼接 | tool streak 可能重复计数或迟到事件反转状态 |
+| health | config/trust/runtime/file activity 分层 | 最近 2 分钟任一事件 | 空闲误报“需连接”，rollout 也伪装 hook connected |
+| hook feature/trust | 识别 false、trust positions、实际 HTTP arrival | 只看自己的 command 是否完整存在 | “写入 hooks.json”被误当成“可执行” |
+| local transport | 私有产品内部 HTTP | 小型本地 inbox | HT 无需复制 HTTP server |
+
+## 10. clean-room 实施清单
+
+以下按最小可验证路径排列，描述行为和测试，不复制 Clawd 的源码表达、函数结构或测试 fixture。
+
+### P0：先让真实 Codex 稳定可见
+
+- [ ] 从标准 `rollout-...-<UUID>.jsonl` 文件名严格提取 UUID，在 attach 时立即种入 cursor；只接受规范 UUID 形状。
+- [ ] 如果后续完整 metadata 也提供 `payload.id`，校验它与 filename ID 一致；不一致则对该文件 fail closed，不能把两个 session 合并。
+- [ ] 将“会话 ID”和“角色已验证”拆开：filename 可以证明 ID，只有完整 metadata 可以证明 Subagent/parent；角色未知时不发 role-sensitive 的 C 升级。
+- [ ] first-line metadata 使用独立、有界、必须读到换行才解析的 reader；预算至少覆盖已观察到的 44,217 bytes，并以真实超长 metadata 回归。建议独立上限 256 KiB，但不复制 metadata 内容到持久化。
+- [ ] steady-state 改为每轮读取至预算，而不是 `available > maxBytesPerFile` 时把 offset 跳到 EOF；只提交完整换行，partial 留待下轮。
+- [ ] oversized/malformed 单条记录只作废该条及其相关 correlation；恢复到下一个可信换行后继续，不能无条件清空整个 session ID。
+
+### P0：避免 hooks 与 rollout 双计数
+
+- [ ] 在内存 observation envelope 中保留 `source = hook|rollout` 与可用的 `turnID/callID`；不要把这些私密或高基数字段写进 hydration persistence。
+- [ ] 对 hook 已覆盖的同 session/turn rollout lifecycle 做 bounded TTL suppression。
+- [ ] 保留 completion rescue：只有当前 session 仍处于 agent-working/due-strong 候选状态且 official terminal 未到达时，允许 JSONL completion/abort 收尾。
+- [ ] 加 terminal fence：closed turn 的迟到 tool、重复 completion、其他 turn 的 stale terminal 不能复活或污染 tool streak。
+
+### P0：把健康文案建立在可操作证据上
+
+- [ ] 状态至少拆为 `rolloutReady`、`hookConfigured`、`hookNeedsReview`、`hookVerified`、`hooksDisabledByUser`、`unavailable/error`。
+- [ ] “监听目录可读但尚无事件”显示“已就绪/空闲”，不显示“需连接”。
+- [ ] rollout 活动不能把 official hook 标为 verified；只有本次运行真实 inbox hook event 可以。
+- [ ] 读取 `[features].hooks` 和 `[hooks.state]` 作只读诊断；绝不写 `trusted_hash`、绝不使用 trust bypass。
+- [ ] 需要审核时准确指引“Terminal 启动 Codex CLI → `/hooks`”，不要让用户在 Desktop 对话里输入不存在的命令。
+
+### P1：长时间运行与旧日会话
+
+- [ ] 保留 today/recent 快路径，并以小预算增量发现“写入仍活跃、但文件留在旧日期目录”的 Desktop session。
+- [ ] cursor 增加 file identity 与 truncation/replace 处理；新 inode 不继承旧 session/correlation。
+- [ ] tracker 淘汰后保留有限 read-position ledger，避免同一进程内重新 attach 后重放。
+- [ ] 启动 backfill 只允许合成持续中的工作信号；绝不重放旧 attention、旧 C 或完成庆祝。
+- [ ] 保留 Health Token 自己的 2 分钟 root-attention 恢复边界，不复制 Clawd 24 小时权限卡策略。
+
+### 验证矩阵
+
+- [ ] 44,217-byte Desktop/Subagent `session_meta` + 后续 live tool 能生成正确 session/parent event。
+- [ ] filename ID / metadata ID mismatch fail closed。
+- [ ] metadata 超上限或缺少换行时，不把 Subagent 猜成 root。
+- [ ] 一轮 append >64 KiB 后，后续 plan/tool/completion 仍会被观察。
+- [ ] hook + rollout 同一 tool 只推进一次 streak。
+- [ ] official Stop 漏失时 JSONL completion 能收尾；已收到 Stop 时不会双收尾。
+- [ ] 旧日期目录中的活跃 Desktop rollout 可在呈现 SLA 内发现。
+- [ ] 文件 truncate、replace、partial UTF-8、malformed/oversized record 不重放历史、不崩溃。
+- [ ] 空闲重启显示“已就绪”，实际 feature off / trust missing / path broken 才给出相应动作。
+- [ ] 真机验收：root prompt → plan → 三次 qualifying tool → Subagent → needs-user → completion，每一步状态与一口饮水记录互不串扰。
+
+## 11. AGPL 与隐私边界
+
+Clawd 当前源代码是 `AGPL-3.0-only`。[`LICENSE#L1-L18`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/LICENSE#L1-L18)、[`package.json#L72`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/package.json#L72)、[`README.md#L367-L375`](https://github.com/rullerzhou-afk/clawd-on-desk/blob/f0745407727dedf9f701e9e01bb9ac64b6e378bc/README.md#L367-L375)
+
+本笔记只记录外部行为、数据契约、边界和失败模式。实施时应：
+
+- 依据 OpenAI 的 hook contract 与本项目独立测试重新实现；
+- 不复制 Clawd 函数、控制流、注释、测试或 UI；
+- 不链接/内嵌 Clawd 代码，除非项目明确决定接受 AGPL 发布义务；
+- 不读取 Clawd 为桌宠/权限功能采集的 prompt、tool input、assistant output、cwd 或 transcript；
+- Health Token 持久化继续只保留最小 `AgentEvent` 与 hydration 数据。
+
+这不是法律意见；它是当前工程的 clean-room 风险边界。
 
 ## 最终判断
 
-可以借鉴 Clawd，但不应“把它整套 copy 进来”。Health Token 当前缺的不是状态抓取能力，而是**把 Codex 的配置、trust、official event 与 rollout fallback 分开建模**。
+“既然 Clawd 能成功，我们没理由失败”是正确的工程判断。它成功的决定性细节不是更神秘的 hook，而是：
 
-这次本机证据已经把问题拆成两个很小、可独立验证的修复：
+1. rollout filename 先锚定 session；
+2. metadata 读取完整且有更现实的上限；
+3. 长期旧目录仍会被发现；
+4. hook/rollout 用 session+turn 去重并允许 completion rescue；
+5. health 只对真实证据下结论。
 
-1. fallback 侧，19,078-byte `session_meta` 超过旧 8 KiB prefix；提高到有界 32 KiB 后，Desktop tool call 可以被识别；
-2. official 侧，Clawd 的 `0:0` handlers 有 trust，Health Token 的 `1:0` handlers 没有；必须由用户在 Codex CLI 审核，应用不能替用户写 `trusted_hash`。
-
-完成 metadata cap、trust inspector、CLI-only 审核指引和 source-specific health，就能解释并修复“Clawd 已经火热感知，但 Health Token 说未连接”的现象，同时保留 Health Token 更小、更私密的实现。
+Health Token 应 clean-room 复现这五项，并保留自己更小的隐私面、1 秒呈现频率和不替用户处理权限的产品边界。
