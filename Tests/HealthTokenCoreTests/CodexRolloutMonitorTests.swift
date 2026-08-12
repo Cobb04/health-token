@@ -148,7 +148,8 @@ func largeDesktopSessionMetadataAnchorsLiveActivity() throws {
     )
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
     let rolloutURL = directory.appendingPathComponent("rollout-large-desktop.jsonl")
-    let privateMetadata = String(repeating: "x", count: 18 * 1024)
+    // Mirrors the 43,672-byte session_meta record emitted by Codex Desktop 0.147.
+    let privateMetadata = String(repeating: "x", count: 43_500)
     try Data(
         """
         {"timestamp":"2027-01-15T07:59:20Z","type":"session_meta","payload":{"id":"large-desktop-root","source":"app-server","private":"\(privateMetadata)"}}
@@ -170,6 +171,68 @@ func largeDesktopSessionMetadataAnchorsLiveActivity() throws {
     #expect(events.count == 1)
     #expect(events.first?.sessionID == "large-desktop-root")
     #expect(events.first?.kind == .toolUsed)
+}
+
+@Test("a newly created large Subagent rollout preserves verified parent identity")
+func liveLargeSubagentMetadataPreservesIdentity() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    let childID = "019fef56-dcc6-7533-a6c2-2bb4a45081a9"
+    let parentID = "019fef56-dcc6-7533-a6c2-2bb4a45081b0"
+    let rolloutURL = directory.appendingPathComponent(
+        "rollout-2027-01-15T08-00-01-\(childID).jsonl"
+    )
+    let privateMetadata = String(repeating: "x", count: 44_500)
+    try Data(
+        """
+        {"timestamp":"2027-01-15T08:00:01Z","type":"session_meta","payload":{"id":"\(childID)","source":{"subagent":{"thread_spawn":{"parent_thread_id":"\(parentID)"}}},"private":"\(privateMetadata)"}}
+        {"timestamp":"2027-01-15T08:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"live","input":"private"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(2))
+
+    #expect(events.map(\.kind) == [.sessionStarted, .toolUsed])
+    #expect(events.allSatisfy { $0.sessionID == childID })
+    #expect(events.allSatisfy { $0.role == .subagent })
+    #expect(events.allSatisfy { $0.parentSessionID == parentID })
+}
+
+@Test("metadata cannot replace the session identity anchored by the rollout filename")
+func mismatchedMetadataCannotClaimSubagentIdentity() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    let filenameID = "019fef56-dcc6-7533-a6c2-2bb4a45081a9"
+    let payloadID = "019fef56-dcc6-7533-a6c2-2bb4a45081aa"
+    let rolloutURL = directory.appendingPathComponent(
+        "rollout-2027-01-15T08-00-01-\(filenameID).jsonl"
+    )
+    try Data(
+        """
+        {"timestamp":"2027-01-15T08:00:01Z","type":"session_meta","payload":{"id":"\(payloadID)","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}
+        {"timestamp":"2027-01-15T08:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"live","input":"private"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(2))
+
+    #expect(events.isEmpty)
 }
 
 @Test("large session metadata reading stops after the complete first line")
@@ -447,6 +510,7 @@ func activeFileAndMemoryBudgetsAreBounded() throws {
         maxCandidateAge: 60,
         maxBytesPerFile: 160,
         maxTotalBytesPerPoll: 256,
+        maxSessionMetadataBytes: 96,
         maxRecordBytes: 96,
         maxPendingAttentionRequests: 2
     )
@@ -477,7 +541,6 @@ func activeFileAndMemoryBudgetsAreBounded() throws {
     #expect(metrics.maximumFileBytesRead <= 160)
     #expect(metrics.retainedRemainderBytes <= 2 * 96)
     #expect(metrics.pendingAttentionRequests <= 2 * 2)
-    #expect(metrics.discardedRecords > 0)
 }
 
 @Test("pending attention IDs and partial record memory remain bounded")
@@ -884,6 +947,201 @@ func rolloutAttentionResolutionIsCorrelated() throws {
     #expect(!encodedText.contains("synthetic private option"))
     #expect(!encodedText.contains("synthetic private answer"))
     #expect(!encodedText.contains("synthetic private command"))
+}
+
+@Test("oversized tool output is skipped without erasing neighboring live activity")
+func oversizedToolOutputPreservesLiveActivity() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutURL = directory.appendingPathComponent("rollout-oversized-output.jsonl")
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:59:59Z","type":"session_meta","payload":{"id":"stable-root","source":"app-server"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(
+        sessionsURL: directory,
+        limits: CodexObservationLimits(
+            maxBytesPerFile: 4 * 1024,
+            maxTotalBytesPerPoll: 4 * 1024,
+            maxRecordBytes: 256
+        )
+    )
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    let privateOutput = String(repeating: "private-output", count: 100)
+    let batch = [
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"first","input":"private"}}"#,
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"first","output":"\#(privateOutput)"}}"#,
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"function_call","name":"wait","call_id":"second","arguments":"private"}}"#
+    ].joined(separator: "\n") + "\n"
+    try appendData(Data(batch.utf8), to: rolloutURL)
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+
+    #expect(events.map(\.kind) == [.toolUsed, .toolUsed])
+    #expect(events.allSatisfy { $0.sessionID == "stable-root" })
+    #expect(!events.contains { $0.kind == .sessionRemoved })
+    #expect(monitor.lastPollMetrics.discardedRecords == 1)
+}
+
+@Test("a multi-chunk oversized record is discarded with bounded memory")
+func oversizedRecordIsSkippedAcrossBoundedPolls() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutURL = directory.appendingPathComponent("rollout-bounded-output.jsonl")
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:59:59Z","type":"session_meta","payload":{"id":"bounded-root","source":"app-server"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(
+        sessionsURL: directory,
+        limits: CodexObservationLimits(
+            maxBytesPerFile: 512,
+            maxTotalBytesPerPoll: 512,
+            maxRecordBytes: 256
+        )
+    )
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    let oversizedLine = #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"huge","output":""#
+        + String(repeating: "x", count: 600)
+        + #""}}"#
+    let validLine = #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"live","input":"private"}}"#
+    try appendData(Data((oversizedLine + "\n" + validLine + "\n").utf8), to: rolloutURL)
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    #expect(try monitor.poll(observedAt: observedAt.addingTimeInterval(1)).isEmpty)
+    #expect(monitor.lastPollMetrics.bytesRead <= 512)
+    #expect(monitor.lastPollMetrics.retainedRemainderBytes <= 256)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(2))
+    #expect(events.map(\.kind) == [.toolUsed])
+    #expect(events.first?.sessionID == "bounded-root")
+    #expect(monitor.lastPollMetrics.retainedRemainderBytes == 0)
+}
+
+@Test("a malformed record does not erase a verified session")
+func malformedRecordDoesNotEraseSession() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutURL = directory.appendingPathComponent("rollout-malformed-live.jsonl")
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:59:59Z","type":"session_meta","payload":{"id":"malformed-root","source":"app-server"}}
+
+        """.utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    try appendData(
+        Data(("not-json\n" + #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"live","input":"private"}}"# + "\n").utf8),
+        to: rolloutURL
+    )
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+    #expect(events.map(\.kind) == [.toolUsed])
+    #expect(events.first?.sessionID == "malformed-root")
+}
+
+@Test("a valid rollout filename recovers root identity only")
+func rootActivityUsesRolloutFilenameIdentity() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let sessionID = "019fef56-dcc6-7533-a6c2-2bb4a45081a9"
+    let rolloutURL = directory.appendingPathComponent(
+        "rollout-2026-08-11T13-41-15-\(sessionID).jsonl"
+    )
+    try Data(
+        (#"{"timestamp":"2027-01-15T07:59:59Z","type":"event_msg","payload":{"type":"token_count"}}"# + "\n").utf8
+    ).write(to: rolloutURL)
+    try setModificationDate(observedAt, for: rolloutURL)
+    let monitor = CodexRolloutMonitor(sessionsURL: directory)
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    try appendRolloutLine(
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"live","input":"private"}}"#,
+        to: rolloutURL
+    )
+    try setModificationDate(observedAt.addingTimeInterval(1), for: rolloutURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+    #expect(events.map(\.kind) == [.toolUsed])
+    #expect(events.first?.sessionID == sessionID)
+    #expect(events.first?.role == .root)
+}
+
+@Test("a late-discovered old rollout emits only activity after monitor startup")
+func lateDiscoveredOldRolloutDoesNotReplayHistory() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let targetID = "019fef56-dcc6-7533-a6c2-2bb4a45081a9"
+    let targetURL = directory.appendingPathComponent(
+        "rollout-2027-01-15T07-00-00-\(targetID).jsonl"
+    )
+    try Data(
+        """
+        {"timestamp":"2027-01-15T07:00:00Z","type":"session_meta","payload":{"id":"\(targetID)","source":"app-server"}}
+        {"timestamp":"2027-01-15T07:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"historical-one","input":"private"}}
+        {"timestamp":"2027-01-15T07:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"historical-two","input":"private"}}
+
+        """.utf8
+    ).write(to: targetURL)
+    try setModificationDate(observedAt.addingTimeInterval(-30), for: targetURL)
+    for index in 0..<2 {
+        let decoyURL = directory.appendingPathComponent("rollout-decoy-\(index).jsonl")
+        try Data(
+            """
+            {"timestamp":"2027-01-15T07:59:5\(index)Z","type":"session_meta","payload":{"id":"decoy-\(index)","source":"cli"}}
+
+            """.utf8
+        ).write(to: decoyURL)
+        try setModificationDate(
+            observedAt.addingTimeInterval(Double(index - 2)),
+            for: decoyURL
+        )
+    }
+    let monitor = CodexRolloutMonitor(
+        sessionsURL: directory,
+        limits: CodexObservationLimits(maxCandidateFiles: 2)
+    )
+    #expect(try monitor.poll(observedAt: observedAt).isEmpty)
+
+    try appendRolloutLine(
+        #"{"timestamp":"2027-01-15T08:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"live","input":"private"}}"#,
+        to: targetURL
+    )
+    try setModificationDate(observedAt.addingTimeInterval(1), for: targetURL)
+
+    let events = try monitor.poll(observedAt: observedAt.addingTimeInterval(1))
+    let toolEvents = events.filter { $0.kind == .toolUsed }
+
+    #expect(toolEvents.count == 1)
+    #expect(toolEvents.first?.sessionID == targetID)
 }
 
 private func appendAbort(reason: String, to url: URL) throws {

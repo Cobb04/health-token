@@ -212,7 +212,6 @@ struct MenuBarContentView: View {
         CodexCompactAttentionPresentation(
             health: model.integrationHealth,
             isObservationEnabled: model.isCodexObservationEnabled,
-            hasObservedEvent: model.hasObservedCodexEvent,
             hasError: model.integrationError != nil
         ).shouldShow
     }
@@ -224,7 +223,7 @@ struct MenuBarContentView: View {
         if !model.isCodexObservationEnabled {
             return "启用 Codex 观察"
         }
-        return "Codex 需连接"
+        return "Codex 观察需检查"
     }
 
     private func presentSettings() {

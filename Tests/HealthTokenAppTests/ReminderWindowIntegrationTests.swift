@@ -224,29 +224,96 @@ func compactReminderPresentation() {
     #expect(presentation.snoozeActionTitle == "15 分钟")
 }
 
-@Test("a privacy-safe rollout event establishes Codex connection freshness")
-func rolloutEventEstablishesConnectionFreshness() {
+@Test("rollout activity stays distinct from verified official hook activity")
+func observationActivityTracksSourcesSeparately() {
     let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
     var activity = CodexObservationActivity()
 
     activity.record(
         hookEventCount: 0,
-        rolloutEventCount: 1,
         observedAt: observedAt
     )
 
     #expect(
-        activity.wasObservedRecently(
+        !activity.wasOfficialHookObservedRecently(
             at: observedAt.addingTimeInterval(119),
             freshnessInterval: 120
         )
     )
+    activity.record(
+        hookEventCount: 1,
+        observedAt: observedAt.addingTimeInterval(120)
+    )
     #expect(
-        !activity.wasObservedRecently(
+        activity.wasOfficialHookObservedRecently(
             at: observedAt.addingTimeInterval(121),
             freshnessInterval: 120
         )
     )
+}
+
+@Test("recent official hooks suppress duplicate rollout work but not completion rescue")
+func CodexEventSourceMergerPrefersOfficialHooks() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let hookTools = (0..<3).map { offset in
+        AgentEvent(
+            kind: .toolUsed,
+            sessionID: "root",
+            timestamp: observedAt.addingTimeInterval(Double(offset)),
+            role: .root,
+            attention: .none,
+            toolClassification: .ordinary
+        )
+    }
+    let rolloutTools = hookTools.map {
+        AgentEvent(
+            kind: $0.kind,
+            sessionID: $0.sessionID,
+            timestamp: $0.timestamp.addingTimeInterval(0.1),
+            role: $0.role,
+            attention: $0.attention,
+            toolClassification: $0.toolClassification
+        )
+    }
+    let completion = AgentEvent(
+        kind: .completed,
+        sessionID: "root",
+        timestamp: observedAt.addingTimeInterval(4),
+        role: .root,
+        attention: .none
+    )
+    var merger = CodexEventSourceMerger()
+
+    let merged = merger.merge(
+        hookEvents: hookTools,
+        rolloutEvents: rolloutTools + [completion],
+        observedAt: observedAt
+    )
+
+    #expect(merged.map(\.kind) == [.toolUsed, .toolUsed, .toolUsed, .completed])
+    #expect(merged.filter { $0.kind == .toolUsed }.count == 3)
+}
+
+@Test("rollout remains active when no official hook has reached the app")
+func CodexEventSourceMergerKeepsFallbackIndependent() {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let rolloutEvent = AgentEvent(
+        kind: .toolUsed,
+        sessionID: "fallback-root",
+        timestamp: observedAt,
+        role: .root,
+        attention: .none,
+        toolClassification: .ordinary
+    )
+    var merger = CodexEventSourceMerger()
+
+    let merged = merger.merge(
+        hookEvents: [],
+        rolloutEvents: [rolloutEvent],
+        observedAt: observedAt
+    )
+
+    #expect(merged == [rolloutEvent])
 }
 
 @Test("non-color cues name all reminder and integration states")
@@ -333,9 +400,8 @@ func codexIntegrationUsesActionableLanguage() {
         noAgentFallbackEnabled: true
     )
 
-    #expect(waiting.status == "Codex 观察：等待首次事件")
-    #expect(waiting.detail.contains("配置已完成"))
-    #expect(waiting.detail.contains("开始一个 Codex 任务"))
+    #expect(waiting.status == "Codex 观察：已就绪")
+    #expect(waiting.detail.contains("正在监听本机 Codex"))
     #expect(waiting.detail.contains("普通定时饮水提醒仍会工作"))
     #expect(!waiting.detail.contains("/hooks"))
     #expect(!waiting.detail.contains("允许 Health Token"))
@@ -344,8 +410,9 @@ func codexIntegrationUsesActionableLanguage() {
     #expect(disabled.status == "Codex 观察：未启用")
     #expect(disabled.detail.contains("自动配置本地连接"))
     #expect(!disabled.detail.contains("/hooks"))
-    #expect(fallback.status == "Codex 观察：仅低干扰兜底")
-    #expect(connected.status == "Codex 观察：已连接")
+    #expect(fallback.status == "Codex 观察：运行中")
+    #expect(fallback.detail.contains("session"))
+    #expect(connected.status == "Codex 观察：实时事件已验证")
     #expect(unavailable.status == "Codex 观察：不可用")
     let distinctStatuses = Set([
         waiting.status,
@@ -357,28 +424,25 @@ func codexIntegrationUsesActionableLanguage() {
     #expect(distinctStatuses.count == 5)
 }
 
-@Test("compact Codex status stops nagging after a trusted event")
-func compactCodexStatusUsesDurableSessionTrust() {
+@Test("compact Codex status only appears for an actionable observation problem")
+func compactCodexStatusOnlyShowsActionableProblems() {
     let waiting = CodexCompactAttentionPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
-        hasObservedEvent: false,
         hasError: false
     )
     let confirmed = CodexCompactAttentionPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
-        hasObservedEvent: true,
         hasError: false
     )
     let failed = CodexCompactAttentionPresentation(
         health: .fallbackOnly,
         isObservationEnabled: true,
-        hasObservedEvent: true,
         hasError: true
     )
 
-    #expect(waiting.shouldShow)
+    #expect(!waiting.shouldShow)
     #expect(!confirmed.shouldShow)
     #expect(failed.shouldShow)
 }
