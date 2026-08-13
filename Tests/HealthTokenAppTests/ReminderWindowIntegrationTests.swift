@@ -686,6 +686,30 @@ func settingsEntryMakesTheSettingsWindowVisible() {
 }
 
 @MainActor
+@Test("the accessory app owns a settings window that can be reopened")
+func accessoryAppOwnsVisibleSettingsWindow() throws {
+    let engine = try HydrationEngine(
+        clock: WindowTestClock(now: Date(timeIntervalSince1970: 1_800_000_000)),
+        store: InMemoryHydrationStore()
+    )
+    let model = HydrationAppModel(engine: engine, integrationHealth: .unavailable)
+    let controller = HealthTokenSettingsWindowController(
+        model: model,
+        activateApplication: {}
+    )
+
+    controller.present()
+    #expect(controller.isVisible)
+
+    controller.close()
+    #expect(!controller.isVisible)
+
+    controller.present()
+    #expect(controller.isVisible)
+    controller.close()
+}
+
+@MainActor
 @Test("settings renders the hydration heatmap without trapping")
 func settingsRendersHydrationHeatmapWithoutTrapping() throws {
     let engine = try HydrationEngine(

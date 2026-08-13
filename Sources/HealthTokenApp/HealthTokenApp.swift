@@ -17,6 +17,7 @@ struct HealthTokenApp: App {
 final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
     let model = HydrationAppModel()
 
+    private lazy var settingsWindowController = HealthTokenSettingsWindowController(model: model)
     private var healthConsolePanelController: HealthConsolePanelController?
     private var panelController: AmbientReminderPanelController?
     private var temporalRefreshCoordinator: TemporalRefreshCoordinator?
@@ -48,16 +49,7 @@ final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentSettings() {
-        if #available(macOS 14.0, *) {
-            NSApplication.shared.activate()
-        } else {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
-        NSApplication.shared.sendAction(
-            Selector(("showSettingsWindow:")),
-            to: nil,
-            from: nil
-        )
+        settingsWindowController.present()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -65,6 +57,7 @@ final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
         temporalRefreshCoordinator?.stop()
         panelController?.stop()
         healthConsolePanelController?.stop()
+        settingsWindowController.close()
         healthConsolePanelController = nil
     }
 }
