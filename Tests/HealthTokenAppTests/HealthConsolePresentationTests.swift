@@ -113,6 +113,23 @@ func productionConsoleRendersBothSurfaces() throws {
 }
 
 @MainActor
+@Test("console window uses black backing without the gray system shadow")
+func consoleWindowHasNoGrayChrome() {
+    let panel = NSPanel(
+        contentRect: CGRect(x: 0, y: 0, width: 554, height: 260),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+
+    HealthConsoleWindowAppearance.apply(to: panel)
+
+    #expect(panel.backgroundColor == .black)
+    #expect(panel.isOpaque)
+    #expect(!panel.hasShadow)
+}
+
+@MainActor
 private func renderConsole(
     model: HydrationAppModel,
     surface: HealthConsolePresentation.Surface

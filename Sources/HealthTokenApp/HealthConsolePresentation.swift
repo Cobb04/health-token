@@ -1,4 +1,6 @@
+import AppKit
 import CoreGraphics
+import SwiftUI
 
 struct HealthConsolePresentation: Equatable {
     enum Surface: Equatable {
@@ -56,5 +58,35 @@ enum HealthConsoleWellbeingState: Equatable {
             return .steady
         }
         return .depleted
+    }
+}
+
+@MainActor
+enum HealthConsoleWindowAppearance {
+    static func apply(to window: NSWindow) {
+        // MenuBarExtra supplies its own rounded mask. A second content clip exposes
+        // the system material and shadow as a gray halo around the black console.
+        window.backgroundColor = .black
+        window.isOpaque = true
+        window.hasShadow = false
+    }
+}
+
+struct HealthConsoleWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        configureWindow(for: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configureWindow(for: nsView)
+    }
+
+    private func configureWindow(for view: NSView) {
+        DispatchQueue.main.async { [weak view] in
+            guard let window = view?.window else { return }
+            HealthConsoleWindowAppearance.apply(to: window)
+        }
     }
 }

@@ -45,13 +45,10 @@ struct MenuBarContentView: View {
             alignment: .top
         )
         .background(Color.black)
-        .clipShape(
-            UnevenRoundedRectangle(
-                bottomLeadingRadius: 23,
-                bottomTrailingRadius: 23,
-                style: .continuous
-            )
-        )
+        .background {
+            HealthConsoleWindowConfigurator()
+                .frame(width: 0, height: 0)
+        }
         .animation(
             reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.86),
             value: console.surface
