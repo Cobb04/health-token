@@ -270,7 +270,7 @@ private struct WaterOverviewMetric: View {
                         .font(.system(size: 16))
                         .frame(width: 30, height: 30)
                 }
-                .buttonStyle(WaterOverviewControlStyle(accented: true))
+                .buttonStyle(WaterOverviewControlStyle())
                 .help("喝完一瓶")
                 .accessibilityLabel("喝完一瓶")
 
@@ -349,22 +349,10 @@ private struct MovementOverviewMetric: View {
 }
 
 private struct WaterOverviewControlStyle: ButtonStyle {
-    var accented = false
-
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(Color.white.opacity(configuration.isPressed ? 0.72 : 0.92))
-            .background(
-                accented
-                    ? Color.accentColor.opacity(configuration.isPressed ? 0.25 : 0.14)
-                    : Color.white.opacity(configuration.isPressed ? 0.18 : 0.1)
-            )
-            .overlay {
-                if accented {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.accentColor.opacity(0.42), lineWidth: 1)
-                }
-            }
+            .background(Color.white.opacity(configuration.isPressed ? 0.18 : 0.1))
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }
