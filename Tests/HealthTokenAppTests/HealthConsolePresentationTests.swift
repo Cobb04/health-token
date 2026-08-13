@@ -133,6 +133,28 @@ func consoleWindowHasNoGrayChrome() {
 }
 
 @MainActor
+@Test("console clears only the system material that wraps its SwiftUI content")
+func consoleClearsWrappingSystemMaterial() {
+    let panel = NSPanel(
+        contentRect: CGRect(x: 0, y: 0, width: 554, height: 543),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    let systemMaterial = NSVisualEffectView(frame: panel.contentView?.bounds ?? .zero)
+    let marker = NSView(frame: .zero)
+    let productMaterial = NSVisualEffectView(frame: .zero)
+    systemMaterial.addSubview(marker)
+    marker.addSubview(productMaterial)
+    panel.contentView = systemMaterial
+
+    HealthConsoleWindowAppearance.apply(to: panel, from: marker)
+
+    #expect(systemMaterial.maskImage != nil)
+    #expect(productMaterial.maskImage == nil)
+}
+
+@MainActor
 private func renderConsole(
     model: HydrationAppModel,
     surface: HealthConsolePresentation.Surface
