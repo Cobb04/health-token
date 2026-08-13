@@ -265,15 +265,6 @@ private struct WaterOverviewMetric: View {
 
                 Spacer()
 
-                Button(action: togglePause) {
-                    Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(WaterOverviewControlStyle())
-                .help(isPaused ? "恢复饮水提醒" : "暂停饮水提醒")
-                .accessibilityLabel(isPaused ? "恢复饮水提醒" : "暂停饮水提醒")
-
                 Button(action: completeBottle) {
                     Text("🥛")
                         .font(.system(size: 16))
@@ -282,6 +273,15 @@ private struct WaterOverviewMetric: View {
                 .buttonStyle(WaterOverviewControlStyle(accented: true))
                 .help("喝完一瓶")
                 .accessibilityLabel("喝完一瓶")
+
+                Button(action: togglePause) {
+                    Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(WaterOverviewControlStyle())
+                .help(isPaused ? "恢复饮水提醒" : "暂停饮水提醒")
+                .accessibilityLabel(isPaused ? "恢复饮水提醒" : "暂停饮水提醒")
 
                 Button(action: quickSip) {
                     Image(systemName: "plus")
