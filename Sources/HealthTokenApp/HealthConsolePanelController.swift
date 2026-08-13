@@ -20,7 +20,10 @@ enum HealthConsolePanelGeometry {
         contentSize: CGSize,
         visibleFrame: CGRect
     ) -> CGRect {
-        let desiredX = anchorFrame.midX - contentSize.width / 2
+        // The status item is only the trigger. The console belongs beneath the
+        // notch/menu bar, so keep it centered on the active display regardless
+        // of where macOS places the status item.
+        let desiredX = visibleFrame.midX - contentSize.width / 2
         let minimumX = visibleFrame.minX
         let maximumX = max(minimumX, visibleFrame.maxX - contentSize.width)
         let x = min(max(desiredX, minimumX), maximumX)

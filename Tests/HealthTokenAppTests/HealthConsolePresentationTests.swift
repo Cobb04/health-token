@@ -133,15 +133,24 @@ func customMenuPanelHasNoSystemChrome() {
     #expect(panel.styleMask.contains(.borderless))
 }
 
-@Test("menu panel is anchored below the status item and clamped on screen")
-func menuPanelAnchorsBelowStatusItem() {
+@Test("menu panel stays centered on the status item's screen")
+func menuPanelStaysCenteredOnScreen() {
     let frame = HealthConsolePanelGeometry.frame(
         anchorFrame: CGRect(x: 480, y: 876, width: 28, height: 24),
         contentSize: CGSize(width: 554, height: 260),
         visibleFrame: CGRect(x: 0, y: 0, width: 1_000, height: 900)
     )
 
-    #expect(frame == CGRect(x: 217, y: 616, width: 554, height: 260))
+    #expect(frame == CGRect(x: 223, y: 616, width: 554, height: 260))
+
+    let secondaryDisplayFrame = HealthConsolePanelGeometry.frame(
+        anchorFrame: CGRect(x: 1_780, y: 876, width: 28, height: 24),
+        contentSize: CGSize(width: 554, height: 260),
+        visibleFrame: CGRect(x: 1_000, y: 0, width: 1_600, height: 900)
+    )
+
+    #expect(secondaryDisplayFrame.minX == 1_523)
+    #expect(secondaryDisplayFrame.midX == 1_800)
 }
 
 @MainActor
