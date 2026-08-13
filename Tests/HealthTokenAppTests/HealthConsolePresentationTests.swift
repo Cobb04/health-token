@@ -116,8 +116,8 @@ func productionConsoleRendersBothSurfaces() throws {
 }
 
 @MainActor
-@Test("console window is transparent without the gray system shadow")
-func consoleWindowHasNoGrayChrome() {
+@Test("custom menu panel is transparent without system chrome")
+func customMenuPanelHasNoSystemChrome() {
     let panel = NSPanel(
         contentRect: CGRect(x: 0, y: 0, width: 554, height: 260),
         styleMask: [.borderless],
@@ -125,33 +125,23 @@ func consoleWindowHasNoGrayChrome() {
         defer: false
     )
 
-    HealthConsoleWindowAppearance.apply(to: panel)
+    HealthConsolePanelAppearance.apply(to: panel)
 
     #expect(panel.backgroundColor == .clear)
     #expect(!panel.isOpaque)
     #expect(!panel.hasShadow)
+    #expect(panel.styleMask.contains(.borderless))
 }
 
-@MainActor
-@Test("console clears only the system material that wraps its SwiftUI content")
-func consoleClearsWrappingSystemMaterial() {
-    let panel = NSPanel(
-        contentRect: CGRect(x: 0, y: 0, width: 554, height: 543),
-        styleMask: [.borderless],
-        backing: .buffered,
-        defer: false
+@Test("menu panel is anchored below the status item and clamped on screen")
+func menuPanelAnchorsBelowStatusItem() {
+    let frame = HealthConsolePanelGeometry.frame(
+        anchorFrame: CGRect(x: 480, y: 876, width: 28, height: 24),
+        contentSize: CGSize(width: 554, height: 260),
+        visibleFrame: CGRect(x: 0, y: 0, width: 1_000, height: 900)
     )
-    let systemMaterial = NSVisualEffectView(frame: panel.contentView?.bounds ?? .zero)
-    let marker = NSView(frame: .zero)
-    let productMaterial = NSVisualEffectView(frame: .zero)
-    systemMaterial.addSubview(marker)
-    marker.addSubview(productMaterial)
-    panel.contentView = systemMaterial
 
-    HealthConsoleWindowAppearance.apply(to: panel, from: marker)
-
-    #expect(systemMaterial.maskImage != nil)
-    #expect(productMaterial.maskImage == nil)
+    #expect(frame == CGRect(x: 217, y: 616, width: 554, height: 260))
 }
 
 @MainActor

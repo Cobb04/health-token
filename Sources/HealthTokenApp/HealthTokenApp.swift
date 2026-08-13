@@ -7,15 +7,9 @@ struct HealthTokenApp: App {
     @NSApplicationDelegateAdaptor(HealthTokenAppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Health Token", systemImage: "drop.fill") {
-            MenuBarContentView(model: appDelegate.model)
-        }
-        .menuBarExtraStyle(.window)
-
-        Window("Health Token 设置", id: HealthTokenSettingsWindow.id) {
+        Settings {
             HealthTokenSettingsView(model: appDelegate.model)
         }
-        .windowResizability(.contentSize)
     }
 }
 
@@ -23,12 +17,18 @@ struct HealthTokenApp: App {
 final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
     let model = HydrationAppModel()
 
+    private var healthConsolePanelController: HealthConsolePanelController?
     private var panelController: AmbientReminderPanelController?
     private var temporalRefreshCoordinator: TemporalRefreshCoordinator?
     private var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
+        let consoleController = HealthConsolePanelController(
+            model: model,
+            presentSettings: presentSettings
+        )
+        healthConsolePanelController = consoleController
         panelController = AmbientReminderPanelController(model: model)
         temporalRefreshCoordinator = TemporalRefreshCoordinator { [weak self] in
             self?.model.refreshTemporalState()
@@ -47,9 +47,24 @@ final class HealthTokenAppDelegate: NSObject, NSApplicationDelegate {
         self.timer = timer
     }
 
+    private func presentSettings() {
+        if #available(macOS 14.0, *) {
+            NSApplication.shared.activate()
+        } else {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+        NSApplication.shared.sendAction(
+            Selector(("showSettingsWindow:")),
+            to: nil,
+            from: nil
+        )
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         temporalRefreshCoordinator?.stop()
         panelController?.stop()
+        healthConsolePanelController?.stop()
+        healthConsolePanelController = nil
     }
 }

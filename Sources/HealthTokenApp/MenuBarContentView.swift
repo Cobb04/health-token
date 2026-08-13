@@ -7,12 +7,18 @@ struct MenuBarContentView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var model: HydrationAppModel
     @State private var console: HealthConsolePresentation
+    private let onPreferredSizeChange: (CGSize) -> Void
+    private let presentSettingsOverride: (() -> Void)?
 
     init(
         model: HydrationAppModel,
-        initialSurface: HealthConsolePresentation.Surface = .overview
+        initialSurface: HealthConsolePresentation.Surface = .overview,
+        onPreferredSizeChange: @escaping (CGSize) -> Void = { _ in },
+        presentSettings: (() -> Void)? = nil
     ) {
         self.model = model
+        self.onPreferredSizeChange = onPreferredSizeChange
+        self.presentSettingsOverride = presentSettings
         _console = State(
             initialValue: HealthConsolePresentation(surface: initialSurface)
         )
@@ -60,15 +66,17 @@ struct MenuBarContentView: View {
             alignment: .top
         )
         .background(Color.clear)
-        .background {
-            HealthConsoleWindowConfigurator()
-                .frame(width: 0, height: 0)
-        }
         .animation(
             reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.86),
             value: console.surface
         )
-        .onAppear { model.refreshTemporalState() }
+        .onAppear {
+            model.refreshTemporalState()
+            onPreferredSizeChange(console.preferredSize)
+        }
+        .onChange(of: console.preferredSize) { newSize in
+            onPreferredSizeChange(newSize)
+        }
     }
 
     private var overview: some View {
@@ -139,6 +147,10 @@ struct MenuBarContentView: View {
     private var waterGoalMilliliters: Int { 2_000 }
 
     private func presentSettings() {
+        if let presentSettingsOverride {
+            presentSettingsOverride()
+            return
+        }
         SettingsWindowPresentation(
             activateApplication: activateApplication,
             openWindow: { openWindow(id: HealthTokenSettingsWindow.id) }
