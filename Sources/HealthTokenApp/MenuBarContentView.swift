@@ -3,79 +3,38 @@ import HealthTokenCore
 import SwiftUI
 
 struct MenuBarContentView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var model: HydrationAppModel
-    @State private var console: HealthConsolePresentation
     private let onPreferredSizeChange: (CGSize) -> Void
     private let presentSettingsOverride: (() -> Void)?
 
     init(
         model: HydrationAppModel,
-        initialSurface: HealthConsolePresentation.Surface = .overview,
         onPreferredSizeChange: @escaping (CGSize) -> Void = { _ in },
         presentSettings: (() -> Void)? = nil
     ) {
         self.model = model
         self.onPreferredSizeChange = onPreferredSizeChange
         self.presentSettingsOverride = presentSettings
-        _console = State(
-            initialValue: HealthConsolePresentation(surface: initialSurface)
-        )
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            if console.surface == .water {
-                WaterConsoleView(
-                    model: model,
-                    presentSettings: presentSettings,
-                    collapse: { console.send(.collapseWater) }
-                )
-                .frame(
-                    width: console.waterDrawerFrame.width,
-                    height: console.waterDrawerFrame.height
-                )
-                .offset(y: console.waterDrawerFrame.minY)
-                .zIndex(1)
-                .transition(
-                    reduceMotion
-                        ? .opacity
-                        : .offset(y: -console.waterDrawerFrame.height)
-                            .combined(with: .opacity)
-                )
-            }
-
-            overview
-                .frame(
-                    width: HealthConsolePresentation.overviewSize.width,
-                    height: HealthConsolePresentation.overviewSize.height
-                )
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        bottomLeadingRadius: 23,
-                        bottomTrailingRadius: 23,
-                        style: .continuous
-                    )
-                )
-                .zIndex(2)
-        }
+        overview
         .frame(
-            width: console.preferredSize.width,
-            height: console.preferredSize.height,
-            alignment: .top
+            width: HealthConsolePresentation.overviewSize.width,
+            height: HealthConsolePresentation.overviewSize.height
+        )
+        .clipShape(
+            UnevenRoundedRectangle(
+                bottomLeadingRadius: 23,
+                bottomTrailingRadius: 23,
+                style: .continuous
+            )
         )
         .background(Color.clear)
-        .animation(
-            reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.86),
-            value: console.surface
-        )
         .onAppear {
             model.refreshTemporalState()
-            onPreferredSizeChange(console.preferredSize)
-        }
-        .onChange(of: console.preferredSize) { newSize in
-            onPreferredSizeChange(newSize)
+            onPreferredSizeChange(HealthConsolePresentation.overviewSize)
         }
     }
 
@@ -86,10 +45,17 @@ struct MenuBarContentView: View {
             HStack(spacing: 15) {
                 AgentStateBadge(state: wellbeingState)
 
-                Text(wellbeingState.title)
-                    .font(.system(size: 25, weight: wellbeingState == .thriving ? .black : .bold))
-                    .tracking(-0.8)
-                    .foregroundStyle(wellbeingState.color)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(wellbeingState.title)
+                        .font(.system(size: 25, weight: wellbeingState == .thriving ? .black : .bold))
+                        .tracking(-0.8)
+                        .foregroundStyle(wellbeingState.color)
+
+                    Text("cost your token, not health.")
+                        .font(.custom("Iowan Old Style", size: 14.5))
+                        .tracking(-0.15)
+                        .foregroundStyle(Color.white.opacity(0.48))
+                }
 
                 Spacer(minLength: 8)
 
@@ -116,11 +82,15 @@ struct MenuBarContentView: View {
                 WaterOverviewMetric(
                     todayMilliliters: model.snapshot.todayEstimatedMilliliters,
                     goalMilliliters: waterGoalMilliliters,
+                    countdownText: countdownText,
+                    isPaused: model.snapshot.status == .paused,
                     quickSip: {
-                        console.send(.quickSip)
                         model.recordProactiveSip()
                     },
-                    selectWater: { console.send(.selectWater) }
+                    togglePause: {
+                        model.setPaused(model.snapshot.status != .paused)
+                    },
+                    completeBottle: model.completeBottle
                 )
 
                 Rectangle()
@@ -145,6 +115,13 @@ struct MenuBarContentView: View {
     }
 
     private var waterGoalMilliliters: Int { 2_000 }
+
+    private var countdownText: String {
+        HydrationMenuStatusPresentation(
+            status: model.snapshot.status,
+            remainingTimeUntilReminder: model.snapshot.remainingTimeUntilReminder
+        ).text
+    }
 
     private func presentSettings() {
         if let presentSettingsOverride {
@@ -264,56 +241,74 @@ private struct AgentStateBadge: View {
 private struct WaterOverviewMetric: View {
     let todayMilliliters: Int
     let goalMilliliters: Int
+    let countdownText: String
+    let isPaused: Bool
     let quickSip: () -> Void
-    let selectWater: () -> Void
+    let togglePause: () -> Void
+    let completeBottle: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button(action: selectWater) {
-                    Label("WATER", systemImage: "drop")
-                        .font(.system(size: 13, weight: .bold))
-                        .tracking(0.7)
-                        .foregroundStyle(Color.white.opacity(0.54))
-                        .symbolRenderingMode(.monochrome)
-                }
-                .buttonStyle(.plain)
+            HStack(spacing: 7) {
+                Label("WATER", systemImage: "drop")
+                    .font(.system(size: 13, weight: .bold))
+                    .tracking(0.7)
+                    .foregroundStyle(Color.white.opacity(0.54))
+                    .symbolRenderingMode(.monochrome)
+
+                Text(countdownText)
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(-0.25)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.accentColor)
+                    .lineLimit(1)
 
                 Spacer()
+
+                Button(action: togglePause) {
+                    Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(WaterOverviewControlStyle())
+                .help(isPaused ? "恢复饮水提醒" : "暂停饮水提醒")
+                .accessibilityLabel(isPaused ? "恢复饮水提醒" : "暂停饮水提醒")
+
+                Button(action: completeBottle) {
+                    Text("🥛")
+                        .font(.system(size: 16))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(WaterOverviewControlStyle(accented: true))
+                .help("喝完一瓶")
+                .accessibilityLabel("喝完一瓶")
 
                 Button(action: quickSip) {
                     Image(systemName: "plus")
                         .font(.system(size: 19, weight: .medium))
-                        .foregroundStyle(.white)
                         .frame(width: 30, height: 30)
-                        .background(Color.white.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(WaterOverviewControlStyle())
                 .accessibilityLabel("直接记录一口")
             }
 
-            Button(action: selectWater) {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text(volumeLabel)
-                        .font(.system(size: 27, weight: .bold))
-                        .foregroundStyle(.white)
-                        .monospacedDigit()
+            VStack(alignment: .leading, spacing: 18) {
+                Text(volumeLabel)
+                    .font(.system(size: 27, weight: .bold))
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
 
-                    GeometryReader { proxy in
-                        Capsule()
-                            .fill(Color.white.opacity(0.12))
-                            .overlay(alignment: .leading) {
-                                Capsule()
-                                    .fill(Color(red: 0.37, green: 0.84, blue: 0.97))
-                                    .frame(width: proxy.size.width * progress)
-                            }
-                    }
-                    .frame(height: 6)
+                GeometryReader { proxy in
+                    Capsule()
+                        .fill(Color.white.opacity(0.12))
+                        .overlay(alignment: .leading) {
+                            Capsule()
+                                .fill(Color(red: 0.37, green: 0.84, blue: 0.97))
+                                .frame(width: proxy.size.width * progress)
+                        }
                 }
-                .contentShape(Rectangle())
+                .frame(height: 6)
             }
-            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity)
     }
@@ -353,170 +348,25 @@ private struct MovementOverviewMetric: View {
     }
 }
 
-private struct WaterConsoleView: View {
-    @ObservedObject var model: HydrationAppModel
-    let presentSettings: () -> Void
-    let collapse: () -> Void
+private struct WaterOverviewControlStyle: ButtonStyle {
+    var accented = false
 
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(countdownText)
-                    .font(.system(size: 33, weight: .semibold))
-                    .tracking(-1.2)
-                    .monospacedDigit()
-                    .foregroundStyle(Color.accentColor)
-
-                Spacer()
-
-                Text("今日 \(model.snapshot.todayEstimatedMilliliters) mL")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color(nsColor: .labelColor))
-            }
-
-            Button(action: model.recordProactiveSip) {
-                Text("＋ 一口")
-                    .font(.system(size: 20, weight: .bold))
-                    .frame(maxWidth: .infinity, minHeight: 66)
-            }
-            .buttonStyle(WaterPrimaryButtonStyle())
-            .padding(.top, 20)
-
-            HStack {
-                if let record = model.snapshot.undoableDrinkRecord {
-                    Text("已记录约 \(record.estimatedMilliliters) mL")
-                        .font(.custom("Iowan Old Style", size: 17))
-                        .foregroundStyle(Color(nsColor: .labelColor))
-
-                    Spacer()
-
-                    Button("撤销") { model.undoDrink(record.id) }
-                        .buttonStyle(WaterTextButtonStyle())
-                } else {
-                    Text("cost your token, not health.")
-                        .font(.custom("Iowan Old Style", size: 17))
-                        .tracking(-0.2)
-                        .foregroundStyle(Color(nsColor: .labelColor))
-
-                    Spacer()
-
-                    Button(action: model.completeBottle) {
-                        Text("🥛")
-                            .font(.system(size: 24))
-                            .frame(width: 39, height: 39)
-                    }
-                    .buttonStyle(WaterBottleButtonStyle())
-                    .help("喝完一瓶 · \(bottleCapacity)")
-                    .accessibilityLabel("喝完一瓶")
-                }
-            }
-            .frame(height: 58)
-            .padding(.top, 6)
-
-            Divider()
-
-            HStack(spacing: 5) {
-                Button {
-                    model.setPaused(model.snapshot.status != .paused)
-                } label: {
-                    Label(
-                        model.snapshot.status == .paused ? "恢复" : "暂停",
-                        systemImage: model.snapshot.status == .paused ? "play.fill" : "pause.fill"
-                    )
-                }
-                .buttonStyle(WaterTextButtonStyle())
-
-                Button(action: presentSettings) {
-                    Image(systemName: "gearshape")
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(WaterTextButtonStyle())
-                .accessibilityLabel("饮水设置")
-
-                Spacer()
-
-                Button(action: collapse) {
-                    Label("收起", systemImage: "chevron.up")
-                }
-                .buttonStyle(WaterTextButtonStyle())
-                .keyboardShortcut(.escape, modifiers: [])
-            }
-            .frame(height: 54)
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 38)
-        .padding(.bottom, 20)
-        .frame(height: 305)
-        .background(
-            .regularMaterial,
-            in: UnevenRoundedRectangle(
-                bottomLeadingRadius: 24,
-                bottomTrailingRadius: 24,
-                style: .continuous
-            )
-        )
-        .overlay {
-            UnevenRoundedRectangle(
-                bottomLeadingRadius: 24,
-                bottomTrailingRadius: 24,
-                style: .continuous
-            )
-            .stroke(Color.white.opacity(0.68), lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.26), radius: 22, y: 12)
-        .environment(\.colorScheme, .light)
-    }
-
-    private var countdownText: String {
-        HydrationMenuStatusPresentation(
-            status: model.snapshot.status,
-            remainingTimeUntilReminder: model.snapshot.remainingTimeUntilReminder
-        ).text
-    }
-
-    private var bottleCapacity: String {
-        HydrationVolumeFormatter.bottleCapacity(
-            model.snapshot.settings.bottleCapacityMilliliters
-        )
-    }
-}
-
-private struct WaterPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(.white)
-            .background(Color.accentColor.opacity(configuration.isPressed ? 0.84 : 1))
-            .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
-            .shadow(color: Color.accentColor.opacity(0.2), radius: 12, y: 7)
-            .scaleEffect(configuration.isPressed ? 0.987 : 1)
-    }
-}
-
-private struct WaterTextButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-            .padding(.horizontal, 9)
-            .frame(height: 36)
+            .foregroundStyle(Color.white.opacity(configuration.isPressed ? 0.72 : 0.92))
             .background(
-                configuration.isPressed
-                    ? Color(nsColor: .labelColor).opacity(0.08)
-                    : .clear
+                accented
+                    ? Color.accentColor.opacity(configuration.isPressed ? 0.25 : 0.14)
+                    : Color.white.opacity(configuration.isPressed ? 0.18 : 0.1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-}
-
-private struct WaterBottleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(Color.accentColor.opacity(configuration.isPressed ? 0.14 : 0.06))
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.accentColor.opacity(0.24), lineWidth: 1)
+                if accented {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.accentColor.opacity(0.42), lineWidth: 1)
+                }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }
 }
 

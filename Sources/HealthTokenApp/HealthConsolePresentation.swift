@@ -2,49 +2,8 @@ import CoreGraphics
 
 struct HealthConsolePresentation: Equatable {
     static let overviewSize = CGSize(width: 554, height: 260)
-    static let waterDrawerFrame = CGRect(x: 14, y: 238, width: 526, height: 305)
 
-    enum Surface: Equatable {
-        case overview
-        case water
-    }
-
-    enum Action: Equatable {
-        case selectWater
-        case quickSip
-        case collapseWater
-    }
-
-    private(set) var surface: Surface
-
-    init(surface: Surface = .overview) {
-        self.surface = surface
-    }
-
-    var preferredSize: CGSize {
-        switch surface {
-        case .overview:
-            Self.overviewSize
-        case .water:
-            CGSize(
-                width: Self.overviewSize.width,
-                height: Self.waterDrawerFrame.maxY
-            )
-        }
-    }
-
-    var waterDrawerFrame: CGRect { Self.waterDrawerFrame }
-
-    mutating func send(_ action: Action) {
-        switch action {
-        case .selectWater:
-            surface = surface == .water ? .overview : .water
-        case .quickSip:
-            break
-        case .collapseWater:
-            surface = .overview
-        }
-    }
+    var preferredSize: CGSize { Self.overviewSize }
 }
 
 enum HealthConsoleWellbeingState: Equatable {

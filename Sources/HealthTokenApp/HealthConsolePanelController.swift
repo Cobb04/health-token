@@ -52,8 +52,7 @@ final class HealthConsolePanelController: NSObject {
 
     init(
         model: HydrationAppModel,
-        presentSettings: @escaping () -> Void,
-        initialSurface: HealthConsolePresentation.Surface = .overview
+        presentSettings: @escaping () -> Void
     ) {
         self.model = model
         self.presentSettings = presentSettings
@@ -66,7 +65,7 @@ final class HealthConsolePanelController: NSObject {
         )
         super.init()
         configureStatusItem()
-        configurePanel(initialSurface: initialSurface)
+        configurePanel()
     }
 
     func stop() {
@@ -91,11 +90,10 @@ final class HealthConsolePanelController: NSObject {
         button.setAccessibilityLabel("Health Token")
     }
 
-    private func configurePanel(initialSurface: HealthConsolePresentation.Surface) {
+    private func configurePanel() {
         HealthConsolePanelAppearance.apply(to: panel)
         let rootView = MenuBarContentView(
             model: model,
-            initialSurface: initialSurface,
             onPreferredSizeChange: { [weak self] size in
                 self?.updatePanelSize(size)
             },
