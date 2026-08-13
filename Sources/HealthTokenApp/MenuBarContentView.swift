@@ -19,32 +19,47 @@ struct MenuBarContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            overview
-                .frame(height: 260)
-
+        ZStack(alignment: .top) {
             if console.surface == .water {
                 WaterConsoleView(
                     model: model,
                     presentSettings: presentSettings,
                     collapse: { console.send(.collapseWater) }
                 )
+                .frame(
+                    width: console.waterDrawerFrame.width,
+                    height: console.waterDrawerFrame.height
+                )
+                .offset(y: console.waterDrawerFrame.minY)
+                .zIndex(1)
                 .transition(
                     reduceMotion
                         ? .opacity
-                        : .asymmetric(
-                            insertion: .move(edge: .top).combined(with: .opacity),
-                            removal: .move(edge: .top).combined(with: .opacity)
-                        )
+                        : .offset(y: -console.waterDrawerFrame.height)
+                            .combined(with: .opacity)
                 )
             }
+
+            overview
+                .frame(
+                    width: HealthConsolePresentation.overviewSize.width,
+                    height: HealthConsolePresentation.overviewSize.height
+                )
+                .clipShape(
+                    UnevenRoundedRectangle(
+                        bottomLeadingRadius: 23,
+                        bottomTrailingRadius: 23,
+                        style: .continuous
+                    )
+                )
+                .zIndex(2)
         }
         .frame(
             width: console.preferredSize.width,
             height: console.preferredSize.height,
             alignment: .top
         )
-        .background(Color.black)
+        .background(Color.clear)
         .background {
             HealthConsoleWindowConfigurator()
                 .frame(width: 0, height: 0)
@@ -420,7 +435,23 @@ private struct WaterConsoleView: View {
         .padding(.top, 38)
         .padding(.bottom, 20)
         .frame(height: 305)
-        .background(.regularMaterial)
+        .background(
+            .regularMaterial,
+            in: UnevenRoundedRectangle(
+                bottomLeadingRadius: 24,
+                bottomTrailingRadius: 24,
+                style: .continuous
+            )
+        )
+        .overlay {
+            UnevenRoundedRectangle(
+                bottomLeadingRadius: 24,
+                bottomTrailingRadius: 24,
+                style: .continuous
+            )
+            .stroke(Color.white.opacity(0.68), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.26), radius: 22, y: 12)
         .environment(\.colorScheme, .light)
     }
 

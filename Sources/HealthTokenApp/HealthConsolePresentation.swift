@@ -3,6 +3,9 @@ import CoreGraphics
 import SwiftUI
 
 struct HealthConsolePresentation: Equatable {
+    static let overviewSize = CGSize(width: 554, height: 260)
+    static let waterDrawerFrame = CGRect(x: 14, y: 238, width: 526, height: 305)
+
     enum Surface: Equatable {
         case overview
         case water
@@ -23,11 +26,16 @@ struct HealthConsolePresentation: Equatable {
     var preferredSize: CGSize {
         switch surface {
         case .overview:
-            CGSize(width: 554, height: 260)
+            Self.overviewSize
         case .water:
-            CGSize(width: 554, height: 565)
+            CGSize(
+                width: Self.overviewSize.width,
+                height: Self.waterDrawerFrame.maxY
+            )
         }
     }
+
+    var waterDrawerFrame: CGRect { Self.waterDrawerFrame }
 
     mutating func send(_ action: Action) {
         switch action {
@@ -64,10 +72,10 @@ enum HealthConsoleWellbeingState: Equatable {
 @MainActor
 enum HealthConsoleWindowAppearance {
     static func apply(to window: NSWindow) {
-        // MenuBarExtra supplies its own rounded mask. A second content clip exposes
-        // the system material and shadow as a gray halo around the black console.
-        window.backgroundColor = .black
-        window.isOpaque = true
+        // The overview and drawer define their own silhouettes. Keeping the host
+        // transparent lets the narrower drawer reveal the desktop at its sides.
+        window.backgroundColor = .clear
+        window.isOpaque = false
         window.hasShadow = false
     }
 }

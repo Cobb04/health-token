@@ -19,8 +19,11 @@ func selectingWaterExpandsDownward() {
     presentation.send(.selectWater)
 
     #expect(presentation.surface == .water)
-    #expect(presentation.preferredSize.width == 554)
-    #expect(presentation.preferredSize.height > 500)
+    #expect(presentation.preferredSize == .init(width: 554, height: 543))
+    #expect(
+        presentation.waterDrawerFrame
+            == CGRect(x: 14, y: 238, width: 526, height: 305)
+    )
 }
 
 @Test("quick sip never opens or closes Water details")
@@ -107,13 +110,13 @@ func productionConsoleRendersBothSurfaces() throws {
     let water = try renderConsole(model: model, surface: .water)
 
     #expect(overview.size == .init(width: 554, height: 260))
-    #expect(water.size == .init(width: 554, height: 565))
+    #expect(water.size == .init(width: 554, height: 543))
     #expect(overview.pixelsWide >= Int(overview.size.width))
     #expect(water.pixelsHigh >= Int(water.size.height))
 }
 
 @MainActor
-@Test("console window uses black backing without the gray system shadow")
+@Test("console window is transparent without the gray system shadow")
 func consoleWindowHasNoGrayChrome() {
     let panel = NSPanel(
         contentRect: CGRect(x: 0, y: 0, width: 554, height: 260),
@@ -124,8 +127,8 @@ func consoleWindowHasNoGrayChrome() {
 
     HealthConsoleWindowAppearance.apply(to: panel)
 
-    #expect(panel.backgroundColor == .black)
-    #expect(panel.isOpaque)
+    #expect(panel.backgroundColor == .clear)
+    #expect(!panel.isOpaque)
     #expect(!panel.hasShadow)
 }
 
