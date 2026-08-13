@@ -16,7 +16,8 @@ let package = Package(
         .target(name: "HealthTokenCore"),
         .executableTarget(
             name: "HealthTokenApp",
-            dependencies: ["HealthTokenCore"]
+            dependencies: ["HealthTokenCore"],
+            resources: [.process("Resources")]
         ),
         .executableTarget(
             name: "HealthTokenHook",
