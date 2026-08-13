@@ -253,7 +253,7 @@ private struct WaterOverviewMetric: View {
                 Label("WATER", systemImage: "drop")
                     .font(.system(size: 13, weight: .bold))
                     .tracking(0.7)
-                    .foregroundStyle(Color.white.opacity(0.54))
+                    .foregroundStyle(Color.accentColor)
                     .symbolRenderingMode(.monochrome)
 
                 Text(countdownText)
