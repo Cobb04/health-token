@@ -161,26 +161,22 @@ private struct AgentStateBadge: View {
                     .clipShape(RoundedRectangle(cornerRadius: 23, style: .continuous))
             }
 
-            Text(modelLabel)
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 5)
-                .background(labelColor.opacity(0.91), in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
-                .padding(.bottom, 6)
-
-            if state == .depleted {
-                Text("💧")
-                    .font(.system(size: 29))
-                    .offset(x: 38, y: -64)
-                    .accessibilityHidden(true)
+            if let modelLabel {
+                Text(modelLabel)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 5)
+                    .background(labelColor.opacity(0.91), in: Capsule())
+                    .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
+                    .padding(.bottom, 6)
             }
+
         }
         .frame(width: 84, height: 84)
         .shadow(color: shadowColor, radius: 12, y: 7)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(state.agentName)，\(modelLabel)")
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var resourceName: String {
@@ -201,12 +197,17 @@ private struct AgentStateBadge: View {
         return NSImage(contentsOf: url)
     }
 
-    private var modelLabel: String {
+    private var modelLabel: String? {
         switch state {
-        case .depleted: "3.6 Flash"
+        case .depleted: nil
         case .steady: "V4 Pro 0813"
         case .thriving: "⚡ 5.6 Sol Ultra"
         }
+    }
+
+    private var accessibilityLabel: String {
+        guard let modelLabel else { return state.agentName }
+        return "\(state.agentName)，\(modelLabel)"
     }
 
     private var cardColor: Color {
@@ -231,7 +232,7 @@ private struct AgentStateBadge: View {
 
     private var imagePadding: CGFloat {
         switch state {
-        case .depleted: 11
+        case .depleted: 0
         case .steady: 0
         case .thriving: -8
         }
